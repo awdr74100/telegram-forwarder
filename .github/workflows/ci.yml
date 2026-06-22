@@ -2,70 +2,37 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
+# Cancel superseded PR runs; never cancel pushes to main.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.number || github.sha }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
+permissions:
+  contents: read
+
 jobs:
-  lint:
-    name: Lint Check
+  check:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6
+
+      # pnpm before setup-node, so the node cache can resolve the pnpm store.
+      # Version is read from package.json "packageManager".
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version-file: .node-version
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
 
-  typecheck:
-    name: Type Check
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm build # before knip: bin → dist/cli.mjs must exist
       - run: pnpm typecheck
-
-  unit:
-    name: Unit Test
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test
-
-  knip:
-    name: Knip Check
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
+      - run: pnpm lint
+      - run: pnpm format:check
       - run: pnpm knip
+      - run: pnpm test
