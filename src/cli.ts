@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { styleText } from 'node:util';
 
 import {
@@ -17,6 +16,10 @@ import {
 } from '@clack/prompts';
 import { defineCommand, runMain } from 'citty';
 
+// resolveJsonModule + import attributes. tsdown tree-shakes this to the single
+// used field (`const version = '...'`) at build time, so the bundle stays clean
+// and the version still matches the published package; tsx reads it at runtime.
+import pkg from '../package.json' with { type: 'json' };
 import { createClient } from './client.js';
 import {
   clearSession,
@@ -28,12 +31,6 @@ import {
 } from './config.js';
 import { Forwarder } from './forwarder.js';
 import type { ContentType, ForwardGroup } from './types.js';
-
-// Read version from package.json so it never drifts from the published package.
-// Resolves to the package root in both `tsx src/cli.ts` and the bundled dist/cli.mjs.
-const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8')) as {
-  version: string;
-};
 
 const CONTENT_CHOICES: { label: string; value: ContentType }[] = [
   { label: 'All content', value: 'all' },

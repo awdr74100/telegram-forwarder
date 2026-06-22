@@ -1,17 +1,22 @@
 {
+  // This config exists only to typecheck (`tsc --noEmit`); the build is tsdown.
+  // Hence no emit options — omitting rootDir is also what lets src/ and test/
+  // be checked together in one program.
   "compilerOptions": {
-    "target": "ESNext",
-    "module": "ESNext",
+    "target": "esnext",
+    "lib": ["es2023"],
+    "module": "preserve",
     "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "resolveJsonModule": true,
+    "types": ["node"],
     "strict": true,
-    "outDir": "dist",
-    "rootDir": "src",
-    "declaration": true,
+    "noUnusedLocals": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "resolveJsonModule": true,
-    "types": ["node"]
+    "noEmit": true
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "test"]
+  "include": ["src", "test"]
 }

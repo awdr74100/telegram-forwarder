@@ -1,10 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { RateLimitedQueue } from '../src/queue.js';
 
 const flush = (ms = 50) => new Promise<void>((r) => setTimeout(r, ms));
 
 describe('RateLimitedQueue', () => {
+  // FloodWait tests switch to fake timers; always hand back real ones so the
+  // tests that rely on `flush` (real setTimeout) keep working.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('executes tasks sequentially in order', async () => {
     const results: number[] = [];
     const q = new RateLimitedQueue({ delayMs: 0, jitterMs: 0, maxRetries: 0 });
@@ -42,8 +48,10 @@ describe('RateLimitedQueue', () => {
   });
 
   it('retries on FloodWait error and succeeds on second attempt', async () => {
+    vi.useFakeTimers();
     let attempts = 0;
-    // Buffer is (waitSec + 5) * 1000. Use waitSec = 0 so buffer = 5000ms.
+    // Buffer is (waitSec + 5) * 1000. Use waitSec = 0 so buffer = 5000ms,
+    // fast-forwarded by the fake timers instead of waited out for real.
     const q = new RateLimitedQueue({ delayMs: 0, jitterMs: 0, maxRetries: 3 });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -57,13 +65,14 @@ describe('RateLimitedQueue', () => {
       if (attempts < 2) throw floodErr;
     });
 
-    // Wait for: first attempt (instant) + FloodWait buffer 5s + second attempt (instant)
-    await flush(6000);
+    // Run the first attempt, the 5s backoff, and the retry to completion.
+    await vi.runAllTimersAsync();
     expect(attempts).toBe(2);
     warnSpy.mockRestore();
-  }, 10_000);
+  });
 
   it('gives up after maxRetries and logs error', async () => {
+    vi.useFakeTimers();
     let attempts = 0;
     const q = new RateLimitedQueue({ delayMs: 0, jitterMs: 0, maxRetries: 1 });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -79,13 +88,13 @@ describe('RateLimitedQueue', () => {
       throw floodErr;
     });
 
-    await flush(12000);
+    await vi.runAllTimersAsync();
     // 1 initial + 1 retry (maxRetries=1) = 2 total attempts
     expect(attempts).toBe(2);
     expect(errSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
     errSpy.mockRestore();
-  }, 15_000);
+  });
 
   it('skips deleted messages without retry or error log', async () => {
     const results: number[] = [];

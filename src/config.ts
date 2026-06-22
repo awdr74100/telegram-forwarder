@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { defu } from 'defu';
 
@@ -21,10 +21,12 @@ const DEFAULTS: AppConfig = {
   },
 };
 
-export function loadConfig(): AppConfig {
-  if (!existsSync(CONFIG_FILE)) return structuredClone(DEFAULTS);
+// `configFile` is injectable so tests can point at a temp file instead of the
+// real ~/.telegram-forwarder/config.json.
+export function loadConfig(configFile = CONFIG_FILE): AppConfig {
+  if (!existsSync(configFile)) return structuredClone(DEFAULTS);
   try {
-    const raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')) as Partial<AppConfig>;
+    const raw = JSON.parse(readFileSync(configFile, 'utf-8')) as Partial<AppConfig>;
     // defu deep-merges, so a partial stored config (e.g. only rateLimit.delayMs)
     // still inherits the remaining nested defaults instead of dropping them.
     return defu(raw, DEFAULTS);
@@ -33,9 +35,9 @@ export function loadConfig(): AppConfig {
   }
 }
 
-export function saveConfig(config: AppConfig): void {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
+export function saveConfig(config: AppConfig, configFile = CONFIG_FILE): void {
+  mkdirSync(dirname(configFile), { recursive: true });
+  writeFileSync(configFile, JSON.stringify(config, null, 2), 'utf-8');
 }
 
 export function isConfigured(config: AppConfig): boolean {
