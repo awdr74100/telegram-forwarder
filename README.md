@@ -1,0 +1,286 @@
+# telegram-forwarder
+
+[![npm version](https://img.shields.io/npm/v/telegram-forwarder?color=blue)](https://www.npmjs.com/package/telegram-forwarder)
+[![CI](https://github.com/awdr74100/telegram-forwarder/actions/workflows/ci.yml/badge.svg)](https://github.com/awdr74100/telegram-forwarder/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+
+A CLI tool that monitors Telegram channels and automatically forwards specific content to target channels.
+
+- Pick source and target channels from a list — no manual ID entry
+- Filter by content type — photos, videos, text, stickers, and more
+- Handles Telegram FloodWait automatically with reactive backoff
+- Config and session persist across restarts in `~/.telegram-forwarder/`
+
+> [!WARNING]
+> This tool automates a **personal Telegram user account** (not a Bot API token). Automating user accounts can violate [Telegram's Terms of Service](https://telegram.org/tos) and may result in your account being limited or banned. Use it at your own risk — ideally on an account you can afford to lose. You are responsible for complying with Telegram's rules and any applicable laws.
+
+## Prerequisites
+
+### Get API Credentials
+
+1. Go to [my.telegram.org/apps](https://my.telegram.org/apps)
+2. Log in with your Telegram account
+3. Create an App and note the **API ID** and **API Hash**
+
+> This tool operates as your **user account**, not a Bot Token.
+
+### Requirements
+
+- Node.js 24+
+
+## Installation
+
+```bash
+npm install -g telegram-forwarder
+# or
+pnpm add -g telegram-forwarder
+```
+
+## Quick Start
+
+### 1. Initialize
+
+```bash
+telegram-forwarder init
+```
+
+You will be prompted for:
+
+- API ID
+- API Hash
+- Phone number (with country code, e.g. `+1234567890`)
+- Verification code sent by Telegram
+- 2FA password (if enabled)
+
+The session is saved to `~/.telegram-forwarder/session.sqlite` — you won't need to log in again on subsequent runs.
+
+### 2. Add a Forwarding Group
+
+```bash
+telegram-forwarder group add
+```
+
+The CLI connects to Telegram and lists all channels you have joined. Everything is selected from lists — you never type a channel name or ID by hand. You then:
+
+1. **Multi-select source channels** — the channels to monitor
+2. **Multi-select target channels** — where to forward content
+3. **Multi-select content types** — what to forward
+4. Choose whether to remove the "Forwarded from" attribution
+
+Available content types: **All content**, **Text messages**, **Photos**, **Videos**, **GIFs / Animations**, **Video notes (circles)**, **Audio files**, **Voice messages**, **Documents / files**, and **Stickers**. Selecting **All content** forwards every message regardless of type.
+
+The group name is generated automatically from your selection.
+
+Example flow:
+
+```
+Fetching your channels…
+
+? Select source channels
+  ❯ ◉ Breaking News (@breaking_news)
+    ◯ Tech Daily (@tech_daily)
+    ◉ Market Watch (@market_watch)
+
+? Select target channels
+  ❯ ◉ My Archive (@my_archive)
+    ◯ Friends Group (@friends)
+
+? What content to forward?
+  ❯ ◉ Photos
+    ◉ Videos
+    ◯ Text messages
+
+? Remove "Forwarded from" attribution? No
+
+Group "Breaking News +1 → My Archive" added (ID: a1b2c3d4)
+```
+
+Each group forwards from **all selected sources** to **all selected targets** with the same content filter. You can create multiple groups for different filter combinations.
+
+### 3. Start
+
+```bash
+telegram-forwarder start
+```
+
+The process runs continuously and monitors all enabled groups. Press `Ctrl+C` to stop.
+
+---
+
+## Commands
+
+### `init`
+
+Configure API credentials and authenticate. Only needs to run once.
+
+```bash
+telegram-forwarder init
+```
+
+### `group add`
+
+Add a new forwarding group by selecting from your joined channels.
+
+```bash
+telegram-forwarder group add
+```
+
+### `group list`
+
+List all groups and their current status.
+
+```bash
+telegram-forwarder group list
+```
+
+Example output:
+
+```
+✓ Breaking News +1 → My Archive a1b2c3d4
+   Sources: @breaking_news, @market_watch
+   Targets: @my_archive
+   Types: photo, video
+   Remove attribution: no
+```
+
+### `group remove`
+
+Delete groups permanently. Shows a checklist of your groups — select the ones to remove and confirm.
+
+```bash
+telegram-forwarder group remove
+```
+
+### `group toggle`
+
+Pause or resume groups without deleting them. Shows a checklist where checked = enabled; adjust the checks and confirm.
+
+```bash
+telegram-forwarder group toggle
+```
+
+### `config`
+
+View or update rate limit settings.
+
+```bash
+# Show current settings
+telegram-forwarder config
+
+# Update
+telegram-forwarder config --delay 200 --jitter 100 --retries 3
+```
+
+| Option      | Default  | Description                                  |
+| ----------- | -------- | -------------------------------------------- |
+| `--delay`   | `100` ms | Minimum gap between forwards                 |
+| `--jitter`  | `50` ms  | Random extra delay added on top of `--delay` |
+| `--retries` | `5`      | Max retries when FloodWait is received       |
+
+### `reset`
+
+Clear the saved login session and force re-authentication. Use this if the client gets stuck while connecting (see [Troubleshooting](#troubleshooting)). Your API credentials are kept — only the session is removed.
+
+```bash
+telegram-forwarder reset
+```
+
+### `start`
+
+Start monitoring and forwarding.
+
+```bash
+telegram-forwarder start
+```
+
+---
+
+## Troubleshooting
+
+### Stuck on connect with repeated `500: NEED_MEMBER_INVALID`
+
+If a previous login was interrupted, the session database can be left in a bad state. Every later connection then fails on the first pre-auth call (`help.getConfig`) and the client retries forever, printing:
+
+```
+[WRN] [network] Telegram is having internal issues: 500:NEED_MEMBER_INVALID (help.getConfig), retrying in 1s
+```
+
+This is not a credentials or network problem. Clear the session and log in again:
+
+```bash
+telegram-forwarder reset
+telegram-forwarder init
+```
+
+If it still fails immediately after a reset, double-check that your API ID and API Hash were copied from the **same app** on [my.telegram.org/apps](https://my.telegram.org/apps), and try a different network (some VPN/datacenter IPs are rejected by Telegram).
+
+---
+
+## Rate Limiting
+
+Telegram returns a `FLOOD_WAIT` error when too many API calls are made in a short period.
+
+This tool handles it in two ways:
+
+1. **Proactive spacing** — a small delay (100 ms + jitter) is applied between consecutive forwards to stay well within limits
+2. **Reactive backoff** — if `FLOOD_WAIT` is received, the queue pauses for `(wait_seconds + 5)` seconds before retrying
+
+Messages deleted by the sender before they can be forwarded are silently skipped.
+
+> User accounts have significantly higher API limits than bots, so hitting FloodWait in normal usage is unlikely.
+
+---
+
+## File Locations
+
+```
+~/.telegram-forwarder/
+├── config.json     ← API credentials, groups, and rate limit settings
+└── session.sqlite  ← login session (do not delete)
+```
+
+> [!IMPORTANT]
+> `config.json` stores your **API ID and API Hash in plain text**, and `session.sqlite` grants **full access to your Telegram account**. Keep this directory private — never share it or commit it to version control.
+
+---
+
+## Development
+
+```bash
+# Clone and install
+git clone https://github.com/awdr74100/telegram-forwarder.git
+cd telegram-forwarder
+pnpm install
+
+# Run without building
+pnpm dev <command>
+
+# Run test
+pnpm test
+
+# Type check
+pnpm typecheck
+
+# Lint
+pnpm lint
+pnpm lint:fix
+
+# Format
+pnpm format
+pnpm format:check
+
+# Find unused exports / dependencies
+pnpm knip
+```
+
+### Release
+
+```bash
+pnpm release   # bumps version, commits, creates git tag, and pushes
+```
+
+The GitHub Actions release workflow picks up the tag and publishes to npm via OIDC.
+
+## License
+
+[MIT](./LICENSE)

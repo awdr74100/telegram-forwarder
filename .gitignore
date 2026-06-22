@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.sqlite
+*.session
+~/.telegram-forwarder/
+.env

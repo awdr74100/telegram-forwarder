@@ -1,0 +1,79 @@
+{
+  "name": "telegram-forwarder",
+  "version": "0.1.0",
+  "description": "CLI to auto-forward messages and media between Telegram channels — filter by content type, with FloodWait-safe rate limiting",
+  "keywords": [
+    "telegram",
+    "forwarder",
+    "auto-forward",
+    "forwarding",
+    "channel",
+    "userbot",
+    "mtproto",
+    "mtcute",
+    "cli",
+    "media",
+    "rate-limit"
+  ],
+  "homepage": "https://github.com/awdr74100/telegram-forwarder#readme",
+  "bugs": {
+    "url": "https://github.com/awdr74100/telegram-forwarder/issues"
+  },
+  "license": "MIT",
+  "author": "Roya <a78945612385238@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/awdr74100/telegram-forwarder.git"
+  },
+  "bin": {
+    "telegram-forwarder": "./dist/cli.mjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsx src/cli.ts",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "knip": "knip",
+    "knip:fix": "knip --fix",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "prepublishOnly": "pnpm run build",
+    "release": "bumpp",
+    "start": "node dist/cli.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.6.0",
+    "@mtcute/core": "^0.30.1",
+    "@mtcute/dispatcher": "^0.30.0",
+    "@mtcute/node": "^0.30.0",
+    "citty": "^0.2.2",
+    "defu": "^6.1.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "bumpp": "^11.0.1",
+    "knip": "^6.17.2",
+    "oxfmt": "^0.56.0",
+    "oxlint": "^1.71.0",
+    "publint": "^0.3.21",
+    "tsdown": "^0.22.3",
+    "tsx": "^4.19.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.8.0"
+}
