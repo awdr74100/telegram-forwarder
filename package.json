@@ -3,17 +3,17 @@
   "version": "0.1.0",
   "description": "CLI to auto-forward messages and media between Telegram channels — filter by content type, with FloodWait-safe rate limiting",
   "keywords": [
-    "telegram",
-    "forwarder",
     "auto-forward",
-    "forwarding",
     "channel",
-    "userbot",
-    "mtproto",
-    "mtcute",
     "cli",
+    "forwarder",
+    "forwarding",
     "media",
-    "rate-limit"
+    "mtcute",
+    "mtproto",
+    "rate-limit",
+    "telegram",
+    "userbot"
   ],
   "homepage": "https://github.com/awdr74100/telegram-forwarder#readme",
   "bugs": {
