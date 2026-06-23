@@ -9,6 +9,7 @@ A CLI tool that monitors Telegram channels and automatically forwards specific c
 - Pick source and target channels from a list — no manual ID entry
 - Filter by content type — photos, videos, text, stickers, and more
 - Handles Telegram FloodWait automatically with reactive backoff
+- Verbose mode traces why each message is or isn't forwarded; optional file logging
 - Config and session persist across restarts in `~/.telegram-forwarder/`
 
 > [!WARNING]
@@ -103,7 +104,7 @@ Each group forwards from **all selected sources** to **all selected targets** wi
 telegram-forwarder start
 ```
 
-The process runs continuously and monitors all enabled groups. Press `Ctrl+C` to stop.
+The process runs continuously and monitors all enabled groups. Each forward is logged as it happens. Press `Ctrl+C` to stop. Add `--verbose` to also see why messages are skipped — see [`start`](#start) for all options.
 
 ---
 
@@ -187,11 +188,27 @@ telegram-forwarder reset
 
 ### `start`
 
-Start monitoring and forwarding.
+Start monitoring and forwarding. The process runs continuously until you press `Ctrl+C`.
 
 ```bash
 telegram-forwarder start
+
+# Trace why each message is or isn't forwarded
+telegram-forwarder start --verbose
+
+# Also write logs to a file
+telegram-forwarder start --log-file
 ```
+
+On startup it pre-resolves every source and target channel and warns about any it cannot reach, then logs each forward as it happens with a timestamp. On shutdown it prints a session summary (`forwarded`, `skipped`, `failed`) and reports any queued forwards dropped.
+
+| Option          | Description                                                          |
+| --------------- | -------------------------------------------------------------------- |
+| `-v, --verbose` | Trace skip decisions (source/content-type mismatches) at debug level |
+| `-q, --quiet`   | Only log warnings and errors                                         |
+| `--log-file`    | Also append logs to `~/.telegram-forwarder/forwarder.log`            |
+
+The log level also honors the `CONSOLA_LEVEL` environment variable.
 
 ---
 
@@ -225,7 +242,7 @@ This tool handles it in two ways:
 1. **Proactive spacing** — a small delay (100 ms + jitter) is applied between consecutive forwards to stay well within limits
 2. **Reactive backoff** — if `FLOOD_WAIT` is received, the queue pauses for `(wait_seconds + 5)` seconds before retrying
 
-Messages deleted by the sender before they can be forwarded are silently skipped.
+Messages deleted by the sender before they can be forwarded are skipped (and noted in the log).
 
 > User accounts have significantly higher API limits than bots, so hitting FloodWait in normal usage is unlikely.
 
@@ -236,7 +253,8 @@ Messages deleted by the sender before they can be forwarded are silently skipped
 ```
 ~/.telegram-forwarder/
 ├── config.json     ← API credentials, groups, and rate limit settings
-└── session.sqlite  ← login session (do not delete)
+├── session.sqlite  ← login session (do not delete)
+└── forwarder.log   ← runtime log (only created when started with --log-file)
 ```
 
 > [!IMPORTANT]

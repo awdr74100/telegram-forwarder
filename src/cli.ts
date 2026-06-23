@@ -24,12 +24,14 @@ import { createClient } from './client.js';
 import {
   clearSession,
   getConfigDir,
+  getLogFilePath,
   hasSession,
   isConfigured,
   loadConfig,
   saveConfig,
 } from './config.js';
 import { Forwarder } from './forwarder.js';
+import { enableFileLogging, logger, setVerbosity } from './logger.js';
 import type { ContentType, ForwardGroup } from './types.js';
 
 const CONTENT_CHOICES: { label: string; value: ContentType }[] = [
@@ -388,28 +390,52 @@ const reset = defineCommand({
 
 const start = defineCommand({
   meta: { name: 'start', description: 'Start monitoring and forwarding' },
-  async run() {
+  args: {
+    verbose: {
+      type: 'boolean',
+      alias: 'v',
+      description: 'Verbose output: trace why each message is or is not forwarded',
+      default: false,
+    },
+    quiet: {
+      type: 'boolean',
+      alias: 'q',
+      description: 'Only log warnings and errors',
+      default: false,
+    },
+    'log-file': {
+      type: 'boolean',
+      description: 'Also append logs to ~/.telegram-forwarder/forwarder.log',
+      default: false,
+    },
+  },
+  async run({ args }) {
+    setVerbosity({ verbose: args.verbose, quiet: args.quiet });
+    if (args['log-file']) enableFileLogging(getLogFilePath());
+
     const config = loadConfig();
 
     if (!isConfigured(config)) {
-      log.error('Run "telegram-forwarder init" first.');
+      logger.error('Run "telegram-forwarder init" first.');
       process.exit(1);
     }
 
     const activeGroups = config.groups.filter((g) => g.enabled);
     if (activeGroups.length === 0) {
-      log.error('No enabled groups. Use "telegram-forwarder group add" to add one.');
+      logger.error('No enabled groups. Use "telegram-forwarder group add" to add one.');
       process.exit(1);
     }
 
-    log.info(styleText('blue', 'Starting Telegram Forwarder…'));
-    log.message(styleText('dim', `Active groups: ${activeGroups.map((g) => g.name).join(', ')}`));
+    logger.start('Starting Telegram Forwarder…');
+    logger.info(`Active groups: ${activeGroups.map((g) => g.name).join(', ')}`);
+    if (args['log-file']) logger.info(`Appending logs to ${getLogFilePath()}`);
 
     const client = createClient(config);
 
     await authenticate(client);
 
     const forwarder = new Forwarder(client, config);
+    await forwarder.checkPeers();
     forwarder.start();
 
     // @mtcute/node registers its own exit hook that synchronously flushes and
@@ -418,14 +444,15 @@ const start = defineCommand({
     // just stop dispatching and exit — mtcute persists the session on its way out.
     process.once('SIGINT', () => {
       const dropped = forwarder.pending;
-      log.warn(
+      logger.warn(
         dropped > 0 ? `Shutting down… dropping ${dropped} queued forward(s).` : 'Shutting down…',
       );
       forwarder.stop();
+      logger.info(`Session summary: ${forwarder.summary()}`);
       process.exit(0);
     });
 
-    log.success('Listening for messages. Ctrl+C to stop.');
+    logger.success('Listening for messages. Ctrl+C to stop.');
   },
 });
 

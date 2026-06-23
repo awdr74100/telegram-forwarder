@@ -1,30 +1,71 @@
-import { styleText } from 'node:util';
-
 import type { Message } from '@mtcute/core';
 import { Dispatcher } from '@mtcute/dispatcher';
 import type { TelegramClient } from '@mtcute/node';
 
 import { matchesContentType, matchesPeer, toInputPeer } from './filter.js';
-import { RateLimitedQueue } from './queue.js';
+import { logger as defaultLogger, type Logger } from './logger.js';
+import { type ForwardOutcome, RateLimitedQueue } from './queue.js';
 import type { AppConfig, ForwardGroup } from './types.js';
+
+interface ForwarderStats {
+  forwarded: number;
+  skipped: number;
+  failed: number;
+}
 
 export class Forwarder {
   private readonly client: TelegramClient;
   private readonly groups: ForwardGroup[];
   private readonly queue: RateLimitedQueue;
+  private readonly log: Logger;
   private dp: Dispatcher | null = null;
+  private readonly stats: ForwarderStats = { forwarded: 0, skipped: 0, failed: 0 };
 
-  constructor(client: TelegramClient, config: AppConfig) {
+  // Bound once so it can be added and later removed from the connection emitter.
+  private readonly handleConnectionState = (state: string): void => {
+    if (state === 'connected') this.log.success('Connected to Telegram.');
+    else if (state === 'offline') this.log.warn('Disconnected from Telegram — reconnecting…');
+    else this.log.debug(`Connection state: ${state}`);
+  };
+
+  constructor(client: TelegramClient, config: AppConfig, logger: Logger = defaultLogger) {
     this.client = client;
     this.groups = config.groups.filter((g) => g.enabled);
-    this.queue = new RateLimitedQueue(config.rateLimit);
+    this.log = logger.withTag('forwarder');
+    this.queue = new RateLimitedQueue(config.rateLimit, {
+      logger,
+      onOutcome: (outcome) => this.recordOutcome(outcome),
+    });
+  }
+
+  // Pre-resolve every source/target peer before listening, so unreachable peers
+  // surface as a startup warning instead of a lazy failure on the first forward.
+  async checkPeers(): Promise<void> {
+    const peers = new Set<string>();
+    for (const group of this.groups) {
+      for (const peer of group.sourcePeers) peers.add(peer);
+      for (const peer of group.targetPeers) peers.add(peer);
+    }
+
+    let resolved = 0;
+    for (const peer of peers) {
+      try {
+        await this.client.resolvePeer(toInputPeer(peer));
+        resolved++;
+      } catch {
+        this.log.warn(`Could not resolve peer "${peer}" — forwards involving it may fail.`);
+      }
+    }
+    this.log.info(`Resolved ${resolved}/${peers.size} peer(s).`);
   }
 
   start(): void {
     if (this.groups.length === 0) {
-      console.log(styleText('yellow', 'No enabled groups — nothing to forward.'));
+      this.log.warn('No enabled groups — nothing to forward.');
       return;
     }
+
+    this.client.onConnectionState.add(this.handleConnectionState);
 
     const dp = Dispatcher.for(this.client);
     this.dp = dp;
@@ -35,32 +76,32 @@ export class Forwarder {
       for (const group of this.groups) {
         const isSourceMatch = group.sourcePeers.some((peer) => matchesPeer(chat, peer));
         if (!isSourceMatch) continue;
-        if (!matchesContentType(upd, group.contentTypes)) continue;
+
+        const mediaType = upd.media?.type ?? 'text';
+        if (!matchesContentType(upd, group.contentTypes)) {
+          this.log.debug(
+            `msg ${upd.id} from ${describeChat(chat)} — skipped: type '${mediaType}' ` +
+              `not in [${group.contentTypes.join(', ')}] for "${group.name}"`,
+          );
+          continue;
+        }
 
         const msg = upd as unknown as Message;
-        const mediaType = upd.media?.type ?? 'text';
-
         for (const targetPeer of group.targetPeers) {
+          const label = `[${group.name}] msg ${upd.id} (${mediaType}) → ${targetPeer}`;
+          this.log.debug(`Enqueued ${label}`);
           this.queue.enqueue(async () => {
             await this.client.forwardMessages({
               messages: [msg],
               toChatId: toInputPeer(targetPeer),
               noAuthor: group.noAuthor,
             });
-            console.log(
-              styleText('dim', `[${formatTimestamp()}]`) +
-                ' ' +
-                styleText('green', '✓') +
-                ` [${group.name}] msg ${upd.id} (${mediaType}) → ${targetPeer}`,
-            );
-          });
+          }, label);
         }
       }
     });
 
-    console.log(
-      styleText('blue', `Dispatcher started. Monitoring ${this.groups.length} group(s).`),
-    );
+    this.log.info(`Dispatcher started. Monitoring ${this.groups.length} group(s).`);
   }
 
   // Number of forwards still queued (not yet sent). Useful when reporting
@@ -69,18 +110,27 @@ export class Forwarder {
     return this.queue.size;
   }
 
+  // One-line tally of what happened this session, printed on shutdown.
+  summary(): string {
+    const { forwarded, skipped, failed } = this.stats;
+    return `forwarded ${forwarded}, skipped ${skipped}, failed ${failed}`;
+  }
+
   stop(): void {
+    this.client.onConnectionState.remove(this.handleConnectionState);
     // Detach handlers from the client — nulling the reference alone leaves the
     // dispatcher bound and still receiving updates.
     this.dp?.unbind();
     this.dp = null;
   }
+
+  private recordOutcome(outcome: ForwardOutcome): void {
+    if (outcome === 'sent') this.stats.forwarded++;
+    else if (outcome === 'skipped') this.stats.skipped++;
+    else this.stats.failed++;
+  }
 }
 
-// Local time in a readable "YYYY-MM-DD HH:mm:ss" format for log lines.
-function formatTimestamp(date = new Date()): string {
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  const ymd = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-  const hms = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-  return `${ymd} ${hms}`;
+function describeChat(chat: { id: number; username?: string | null }): string {
+  return chat.username ? `@${chat.username}` : String(chat.id);
 }

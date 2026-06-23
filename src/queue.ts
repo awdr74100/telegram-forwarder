@@ -1,18 +1,37 @@
+import { logger as defaultLogger, type Logger } from './logger.js';
 import type { RateLimitConfig } from './types.js';
 
 type Task = () => Promise<void>;
 
+export type ForwardOutcome = 'sent' | 'skipped' | 'failed';
+
+interface QueueDeps {
+  logger?: Logger;
+  // Called once per task with its terminal outcome so callers can keep stats.
+  onOutcome?: (outcome: ForwardOutcome, label: string) => void;
+}
+
+interface QueueItem {
+  task: Task;
+  // Human-readable description used in log lines and outcome reporting.
+  label: string;
+}
+
 export class RateLimitedQueue {
-  private readonly queue: Task[] = [];
+  private readonly queue: QueueItem[] = [];
   private running = false;
   private readonly opts: RateLimitConfig;
+  private readonly log: Logger;
+  private readonly onOutcome?: (outcome: ForwardOutcome, label: string) => void;
 
-  constructor(opts: RateLimitConfig) {
+  constructor(opts: RateLimitConfig, deps: QueueDeps = {}) {
     this.opts = opts;
+    this.log = (deps.logger ?? defaultLogger).withTag('queue');
+    this.onOutcome = deps.onOutcome;
   }
 
-  enqueue(task: Task): void {
-    this.queue.push(task);
+  enqueue(task: Task, label = 'forward'): void {
+    this.queue.push({ task, label });
     if (!this.running) void this.drain();
   }
 
@@ -23,8 +42,8 @@ export class RateLimitedQueue {
   private async drain(): Promise<void> {
     this.running = true;
     while (this.queue.length > 0) {
-      const task = this.queue.shift()!;
-      await this.runWithRetry(task);
+      const { task, label } = this.queue.shift()!;
+      await this.runWithRetry(task, label);
       if (this.queue.length > 0) {
         await this.sleep(this.opts.delayMs + Math.random() * this.opts.jitterMs);
       }
@@ -32,27 +51,31 @@ export class RateLimitedQueue {
     this.running = false;
   }
 
-  private async runWithRetry(task: Task, attempt = 0): Promise<void> {
+  private async runWithRetry(task: Task, label: string, attempt = 0): Promise<void> {
     try {
       await task();
+      this.log.success(label);
+      this.onOutcome?.('sent', label);
     } catch (err: unknown) {
       if (isDeletedMessage(err)) {
-        console.warn('[queue] Message was deleted before forwarding — skipping');
+        this.log.warn(`Message was deleted before forwarding — skipping (${label})`);
+        this.onOutcome?.('skipped', label);
         return;
       }
 
       const waitSec = extractFloodWait(err);
       if (waitSec !== null && attempt < this.opts.maxRetries) {
         const waitMs = (waitSec + 5) * 1000;
-        console.warn(
-          `[queue] FloodWait ${waitSec}s — pausing ${waitSec + 5}s` +
-            ` (attempt ${attempt + 1}/${this.opts.maxRetries})`,
+        this.log.warn(
+          `FloodWait ${waitSec}s — pausing ${waitSec + 5}s` +
+            ` (attempt ${attempt + 1}/${this.opts.maxRetries}) [${label}]`,
         );
         await this.sleep(waitMs);
-        return this.runWithRetry(task, attempt + 1);
+        return this.runWithRetry(task, label, attempt + 1);
       }
 
-      console.error('[queue] Task failed:', err instanceof Error ? err.message : err);
+      this.log.error(`Forward failed [${label}]:`, err instanceof Error ? err.message : err);
+      this.onOutcome?.('failed', label);
     }
   }
 
