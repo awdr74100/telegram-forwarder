@@ -1,10 +1,12 @@
 import type { TelegramClient } from '@mtcute/node';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Forwarder } from '../src/forwarder.js';
+import type { Logger } from '../src/logger.js';
 import type { AppConfig, ForwardGroup } from '../src/types.js';
 
-// The Dispatcher only needs these event hooks to bind/unbind. This is an
+// The Dispatcher only needs these event hooks to bind/unbind, plus the
+// connection-state emitter the forwarder subscribes to. This is an
 // event-emitter stub, not a network mock — no Telegram RPC is ever exercised;
 // we are testing our own group-filtering logic.
 const makeFakeClient = () => ({
@@ -16,7 +18,26 @@ const makeFakeClient = () => ({
     add: vi.fn<(handler: unknown) => void>(),
     remove: vi.fn<(handler: unknown) => void>(),
   },
+  onConnectionState: {
+    add: vi.fn<(handler: unknown) => void>(),
+    remove: vi.fn<(handler: unknown) => void>(),
+  },
 });
+
+// A logger stub so tests assert on log calls without touching consola. withTag()
+// returns the same object so both the forwarder and its queue resolve to these
+// spies.
+const makeLogger = () => {
+  const log = {
+    success: vi.fn<(...args: unknown[]) => void>(),
+    warn: vi.fn<(...args: unknown[]) => void>(),
+    error: vi.fn<(...args: unknown[]) => void>(),
+    info: vi.fn<(...args: unknown[]) => void>(),
+    debug: vi.fn<(...args: unknown[]) => void>(),
+    withTag: () => log,
+  };
+  return log;
+};
 
 const makeGroup = (overrides: Partial<ForwardGroup> = {}): ForwardGroup => ({
   id: 'g1',
@@ -38,29 +59,30 @@ const makeConfig = (groups: ForwardGroup[]): AppConfig => ({
   rateLimit: { delayMs: 0, jitterMs: 0, maxRetries: 0 },
 });
 
-const logText = (spy: ReturnType<typeof vi.spyOn>) =>
-  spy.mock.calls.map((args: unknown[]) => args.join(' ')).join('\n');
+const makeForwarder = (config: AppConfig) => {
+  const client = makeFakeClient();
+  const log = makeLogger();
+  const forwarder = new Forwarder(
+    client as unknown as TelegramClient,
+    config,
+    log as unknown as Logger,
+  );
+  return { client, log, forwarder };
+};
 
 describe('Forwarder', () => {
-  let logSpy: ReturnType<typeof vi.spyOn>;
-
-  afterEach(() => {
-    logSpy?.mockRestore();
-  });
-
   it('monitors only the enabled groups', () => {
-    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const client = makeFakeClient();
-    const config = makeConfig([
-      makeGroup({ id: 'on', enabled: true }),
-      makeGroup({ id: 'off', enabled: false }),
-    ]);
+    const { client, log, forwarder } = makeForwarder(
+      makeConfig([
+        makeGroup({ id: 'on', enabled: true }),
+        makeGroup({ id: 'off', enabled: false }),
+      ]),
+    );
 
-    const forwarder = new Forwarder(client as unknown as TelegramClient, config);
     forwarder.start();
 
     // Only the enabled group is counted, and the dispatcher is bound.
-    expect(logText(logSpy)).toContain('Monitoring 1 group(s)');
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('Monitoring 1 group(s)'));
     expect(client.onUpdate.add).toHaveBeenCalledTimes(1);
 
     forwarder.stop();
@@ -68,32 +90,26 @@ describe('Forwarder', () => {
   });
 
   it('does nothing and binds no dispatcher when every group is disabled', () => {
-    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const client = makeFakeClient();
-    const config = makeConfig([makeGroup({ enabled: false })]);
+    const { client, log, forwarder } = makeForwarder(makeConfig([makeGroup({ enabled: false })]));
 
-    new Forwarder(client as unknown as TelegramClient, config).start();
+    forwarder.start();
 
-    expect(logText(logSpy)).toContain('No enabled groups');
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('No enabled groups'));
     expect(client.onUpdate.add).not.toHaveBeenCalled();
   });
 
   it('does nothing when there are no groups at all', () => {
-    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const client = makeFakeClient();
+    const { log, forwarder } = makeForwarder(makeConfig([]));
 
-    const forwarder = new Forwarder(client as unknown as TelegramClient, makeConfig([]));
     forwarder.start();
 
-    expect(logText(logSpy)).toContain('No enabled groups');
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('No enabled groups'));
     expect(forwarder.pending).toBe(0);
   });
 
   it('stop() is safe to call when start() bound nothing', () => {
-    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const client = makeFakeClient();
+    const { client, forwarder } = makeForwarder(makeConfig([]));
 
-    const forwarder = new Forwarder(client as unknown as TelegramClient, makeConfig([]));
     forwarder.start();
 
     expect(() => forwarder.stop()).not.toThrow();

@@ -8,6 +8,7 @@ import type { AppConfig } from './types.js';
 
 const CONFIG_DIR = join(homedir(), '.telegram-forwarder');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
+const LOG_FILE = join(CONFIG_DIR, 'forwarder.log');
 
 const DEFAULTS: AppConfig = {
   apiId: 0,
@@ -65,4 +66,8 @@ export function clearSession(sessionPath: string): string[] {
 
 export function getConfigDir(): string {
   return CONFIG_DIR;
+}
+
+export function getLogFilePath(): string {
+  return LOG_FILE;
 }
