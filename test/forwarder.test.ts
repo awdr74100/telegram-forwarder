@@ -62,11 +62,9 @@ const makeConfig = (groups: ForwardGroup[]): AppConfig => ({
 const makeForwarder = (config: AppConfig) => {
   const client = makeFakeClient();
   const log = makeLogger();
-  const forwarder = new Forwarder(
-    client as unknown as TelegramClient,
-    config,
-    log as unknown as Logger,
-  );
+  const forwarder = new Forwarder(client as unknown as TelegramClient, config, {
+    logger: log as unknown as Logger,
+  });
   return { client, log, forwarder };
 };
 

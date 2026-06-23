@@ -8,7 +8,9 @@ A CLI tool that monitors Telegram channels and automatically forwards specific c
 
 - Pick source and target channels from a list — no manual ID entry
 - Filter by content type — photos, videos, text, stickers, and more
+- Filter by keyword — only forward (or skip) messages whose text/caption matches
 - Handles Telegram FloodWait automatically with reactive backoff
+- Dry-run mode shows what would be forwarded without sending anything
 - Verbose mode traces why each message is or isn't forwarded; optional file logging
 - Config and session persist across restarts in `~/.telegram-forwarder/`
 
@@ -66,9 +68,13 @@ The CLI connects to Telegram and lists all channels you have joined. Everything 
 1. **Multi-select source channels** — the channels to monitor
 2. **Multi-select target channels** — where to forward content
 3. **Multi-select content types** — what to forward
-4. Choose whether to remove the "Forwarded from" attribution
+4. **Include keywords** (optional) — only forward messages whose text/caption contains one of these
+5. **Exclude keywords** (optional) — skip messages whose text/caption contains one of these
+6. Choose whether to remove the "Forwarded from" attribution
 
 Available content types: **All content**, **Text messages**, **Photos**, **Videos**, **GIFs / Animations**, **Video notes (circles)**, **Audio files**, **Voice messages**, **Documents / files**, and **Stickers**. Selecting **All content** forwards every message regardless of type.
+
+Keyword filters are case-insensitive substring matches. Leave them blank for no filter. Exclude takes precedence — a message hit by both an include and an exclude keyword is skipped. Because the match is on text, a media-only message with no caption cannot satisfy an include keyword.
 
 The group name is generated automatically from your selection.
 
@@ -91,6 +97,8 @@ Fetching your channels…
     ◉ Videos
     ◯ Text messages
 
+? Only forward messages containing these keywords (comma-separated, blank = no filter): breaking, urgent
+? Skip messages containing these keywords (comma-separated, blank = none):
 ? Remove "Forwarded from" attribution? No
 
 Group "Breaking News +1 → My Archive" added (ID: a1b2c3d4)
@@ -141,7 +149,18 @@ Example output:
    Sources: @breaking_news, @market_watch
    Targets: @my_archive
    Types: photo, video
+   Include keywords: breaking, urgent
    Remove attribution: no
+```
+
+### `group edit`
+
+Edit an existing group. Pick a group from the list, then walk through the same
+prompts as `group add` with the current values pre-filled — adjust sources,
+targets, content types, keyword filters, or attribution and save.
+
+```bash
+telegram-forwarder group edit
 ```
 
 ### `group remove`
@@ -198,6 +217,9 @@ telegram-forwarder start --verbose
 
 # Also write logs to a file
 telegram-forwarder start --log-file
+
+# Preview matches without forwarding anything
+telegram-forwarder start --dry-run
 ```
 
 On startup it pre-resolves every source and target channel and warns about any it cannot reach, then logs each forward as it happens with a timestamp. On shutdown it prints a session summary (`forwarded`, `skipped`, `failed`) and reports any queued forwards dropped.
@@ -207,6 +229,9 @@ On startup it pre-resolves every source and target channel and warns about any i
 | `-v, --verbose` | Trace skip decisions (source/content-type mismatches) at debug level |
 | `-q, --quiet`   | Only log warnings and errors                                         |
 | `--log-file`    | Also append logs to `~/.telegram-forwarder/forwarder.log`            |
+| `--dry-run`     | Log every matching message but never actually forward it             |
+
+Use `--dry-run` to verify a new group's filters against live messages safely — it still connects and matches, but skips the send entirely.
 
 The log level also honors the `CONSOLA_LEVEL` environment variable.
 

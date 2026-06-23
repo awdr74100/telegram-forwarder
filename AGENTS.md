@@ -27,15 +27,15 @@ and UX. This file focuses on how the code is organized and how to work in it.
 
 Entry point is `src/cli.ts`; everything else is a focused module:
 
-| File               | Responsibility                                                                 |
-| ------------------ | ------------------------------------------------------------------------------ |
-| `src/cli.ts`       | Command definitions (`init`, `group`, `config`, `reset`, `start`) and prompts. |
-| `src/client.ts`    | Constructs the `@mtcute/node` `TelegramClient`.                                |
-| `src/config.ts`    | Load/save config in `~/.telegram-forwarder/`, session file helpers.            |
-| `src/forwarder.ts` | `Forwarder` class: binds a `Dispatcher`, matches messages, enqueues forwards.  |
-| `src/filter.ts`    | Pure functions: content-type matching, peer matching, peer → input conversion. |
-| `src/queue.ts`     | `RateLimitedQueue`: serialized sends, proactive spacing, FloodWait backoff.    |
-| `src/types.ts`     | Shared types (`AppConfig`, `ForwardGroup`, `ContentType`, `RateLimitConfig`).  |
+| File               | Responsibility                                                                                   |
+| ------------------ | ------------------------------------------------------------------------------------------------ |
+| `src/cli.ts`       | Command definitions (`init`, `group`, `config`, `reset`, `start`) and prompts.                   |
+| `src/client.ts`    | Constructs the `@mtcute/node` `TelegramClient`.                                                  |
+| `src/config.ts`    | Load/save config in `~/.telegram-forwarder/`, session file helpers.                              |
+| `src/forwarder.ts` | `Forwarder` class: binds a `Dispatcher`, matches messages, enqueues forwards.                    |
+| `src/filter.ts`    | Pure functions: content-type matching, keyword matching, peer matching, peer → input conversion. |
+| `src/queue.ts`     | `RateLimitedQueue`: serialized sends, proactive spacing, FloodWait backoff.                      |
+| `src/types.ts`     | Shared types (`AppConfig`, `ForwardGroup`, `ContentType`, `RateLimitConfig`).                    |
 
 Data flow: `start` authenticates → `Forwarder.start()` subscribes to new
 messages → for each enabled group, `filter.ts` decides if the message matches →

@@ -2,7 +2,7 @@ import type { Message } from '@mtcute/core';
 import { Dispatcher } from '@mtcute/dispatcher';
 import type { TelegramClient } from '@mtcute/node';
 
-import { matchesContentType, matchesPeer, toInputPeer } from './filter.js';
+import { matchesContentType, matchesKeywords, matchesPeer, toInputPeer } from './filter.js';
 import { logger as defaultLogger, type Logger } from './logger.js';
 import { type ForwardOutcome, RateLimitedQueue } from './queue.js';
 import type { AppConfig, ForwardGroup } from './types.js';
@@ -13,11 +13,19 @@ interface ForwarderStats {
   failed: number;
 }
 
+interface ForwarderOptions {
+  logger?: Logger;
+  // When true, log every match but never actually forward — for verifying
+  // filters safely without sending anything or risking FloodWait.
+  dryRun?: boolean;
+}
+
 export class Forwarder {
   private readonly client: TelegramClient;
   private readonly groups: ForwardGroup[];
   private readonly queue: RateLimitedQueue;
   private readonly log: Logger;
+  private readonly dryRun: boolean;
   private dp: Dispatcher | null = null;
   private readonly stats: ForwarderStats = { forwarded: 0, skipped: 0, failed: 0 };
 
@@ -28,9 +36,11 @@ export class Forwarder {
     else this.log.debug(`Connection state: ${state}`);
   };
 
-  constructor(client: TelegramClient, config: AppConfig, logger: Logger = defaultLogger) {
+  constructor(client: TelegramClient, config: AppConfig, opts: ForwarderOptions = {}) {
+    const { logger = defaultLogger, dryRun = false } = opts;
     this.client = client;
     this.groups = config.groups.filter((g) => g.enabled);
+    this.dryRun = dryRun;
     this.log = logger.withTag('forwarder');
     this.queue = new RateLimitedQueue(config.rateLimit, {
       logger,
@@ -86,9 +96,20 @@ export class Forwarder {
           continue;
         }
 
+        if (!matchesKeywords(upd, group.includeKeywords, group.excludeKeywords)) {
+          this.log.debug(
+            `msg ${upd.id} from ${describeChat(chat)} — skipped: keyword filter for "${group.name}"`,
+          );
+          continue;
+        }
+
         const msg = upd as unknown as Message;
         for (const targetPeer of group.targetPeers) {
           const label = `[${group.name}] msg ${upd.id} (${mediaType}) → ${targetPeer}`;
+          if (this.dryRun) {
+            this.log.info(`[dry-run] would forward ${label}`);
+            continue;
+          }
           this.log.debug(`Enqueued ${label}`);
           this.queue.enqueue(async () => {
             await this.client.forwardMessages({
