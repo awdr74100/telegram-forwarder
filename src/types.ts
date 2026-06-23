@@ -16,6 +16,11 @@ export interface ForwardGroup {
   sourcePeers: string[];
   targetPeers: string[];
   contentTypes: ContentType[];
+  // Case-insensitive substring filters on the message text/caption. Optional so
+  // configs written before this feature still load. Empty/absent = no filter;
+  // exclude wins over include. See matchesKeywords in filter.ts.
+  includeKeywords?: string[];
+  excludeKeywords?: string[];
   noAuthor: boolean;
   enabled: boolean;
   createdAt: string;

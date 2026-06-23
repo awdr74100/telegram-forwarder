@@ -11,6 +11,7 @@ import {
   multiselect,
   outro,
   password,
+  select,
   spinner,
   text,
 } from '@clack/prompts';
@@ -124,6 +125,114 @@ async function fetchChannels(client: Parameters<typeof createClient>[0]): Promis
   return choices;
 }
 
+// Split a comma-separated keyword input into a clean, de-duplicated list.
+function parseKeywords(input: string): string[] {
+  const seen = new Set<string>();
+  for (const raw of input.split(',')) {
+    const kw = raw.trim();
+    if (kw.length > 0) seen.add(kw);
+  }
+  return [...seen];
+}
+
+// Auto-generated group name, e.g. "Breaking News +1 → My Archive". Falls back to
+// the raw identifier when a peer is not in the fetched channel list.
+function buildGroupName(channels: ChannelChoice[], source: string[], target: string[]): string {
+  const labelOf = new Map(channels.map((c) => [c.value, c.label]));
+  const summarize = (peers: string[]): string => {
+    const first = labelOf.get(peers[0]) ?? peers[0];
+    return peers.length > 1 ? `${first} +${peers.length - 1}` : first;
+  };
+  return `${summarize(source)} → ${summarize(target)}`;
+}
+
+// The mutable fields of a forwarding group, gathered from interactive prompts.
+// Shared by `group add` (no defaults) and `group edit` (current values prefilled).
+type GroupDraft = Pick<
+  ForwardGroup,
+  'sourcePeers' | 'targetPeers' | 'contentTypes' | 'noAuthor'
+> & {
+  includeKeywords: string[];
+  excludeKeywords: string[];
+};
+
+async function promptGroupDetails(
+  channels: ChannelChoice[],
+  defaults: Partial<GroupDraft> = {},
+): Promise<GroupDraft> {
+  const channelOptions = channels.map((c) => ({ value: c.value, label: c.name }));
+
+  const sourcePeers = ensure(
+    await multiselect({
+      message: 'Select source channels (space to select, enter to confirm):',
+      options: channelOptions,
+      initialValues: defaults.sourcePeers,
+      required: true,
+    }),
+  );
+
+  const targetPeers = ensure(
+    await multiselect({
+      message: 'Select target channels:',
+      options: channelOptions,
+      initialValues: defaults.targetPeers,
+      required: true,
+    }),
+  );
+
+  // Forwarding a channel back into itself (or any shared source/target) creates a
+  // loop. Warn but let the user decide — overlapping chains are occasionally
+  // intentional across multiple groups.
+  const overlap = sourcePeers.filter((p) => targetPeers.includes(p));
+  if (overlap.length > 0) {
+    log.warn(`Source and target overlap (${overlap.join(', ')}) — this can cause a forward loop.`);
+  }
+
+  const contentTypes = ensure(
+    await multiselect<ContentType>({
+      message: 'What content to forward?',
+      options: CONTENT_CHOICES,
+      initialValues: defaults.contentTypes,
+      required: true,
+    }),
+  );
+
+  const includeRaw = ensure(
+    await text({
+      message:
+        'Only forward messages containing these keywords (comma-separated, blank = no filter):',
+      placeholder: 'e.g. breaking, urgent',
+      defaultValue: '',
+      initialValue: (defaults.includeKeywords ?? []).join(', ') || undefined,
+    }),
+  );
+
+  const excludeRaw = ensure(
+    await text({
+      message: 'Skip messages containing these keywords (comma-separated, blank = none):',
+      placeholder: 'e.g. ad, sponsored',
+      defaultValue: '',
+      initialValue: (defaults.excludeKeywords ?? []).join(', ') || undefined,
+    }),
+  );
+
+  const noAuthor = ensure(
+    await confirm({
+      message: 'Remove "Forwarded from" attribution?',
+      initialValue: defaults.noAuthor ?? false,
+    }),
+  );
+
+  return {
+    sourcePeers,
+    targetPeers,
+    contentTypes,
+    includeKeywords: parseKeywords(includeRaw),
+    excludeKeywords: parseKeywords(excludeRaw),
+    noAuthor,
+  };
+}
+
 // ─── init ────────────────────────────────────────────────────────────────────
 
 const init = defineCommand({
@@ -184,53 +293,12 @@ const groupAdd = defineCommand({
       process.exit(1);
     }
 
-    const channelOptions = channels.map((c) => ({ value: c.value, label: c.name }));
-
-    const sourcePeers = ensure(
-      await multiselect({
-        message: 'Select source channels (space to select, enter to confirm):',
-        options: channelOptions,
-        required: true,
-      }),
-    );
-
-    const targetPeers = ensure(
-      await multiselect({
-        message: 'Select target channels:',
-        options: channelOptions,
-        required: true,
-      }),
-    );
-
-    const contentTypes = ensure(
-      await multiselect<ContentType>({
-        message: 'What content to forward?',
-        options: CONTENT_CHOICES,
-        required: true,
-      }),
-    );
-
-    const noAuthor = ensure(
-      await confirm({
-        message: 'Remove "Forwarded from" attribution?',
-        initialValue: false,
-      }),
-    );
-
-    const labelOf = new Map(channels.map((c) => [c.value, c.label]));
-    const summarize = (peers: string[]): string => {
-      const first = labelOf.get(peers[0]) ?? peers[0];
-      return peers.length > 1 ? `${first} +${peers.length - 1}` : first;
-    };
-    const name = `${summarize(sourcePeers)} → ${summarize(targetPeers)}`;
+    const draft = await promptGroupDetails(channels);
 
     const newGroup: ForwardGroup = {
       id: randomUUID(),
-      name,
-      sourcePeers,
-      targetPeers,
-      contentTypes,
-      noAuthor,
+      name: buildGroupName(channels, draft.sourcePeers, draft.targetPeers),
+      ...draft,
       enabled: true,
       createdAt: new Date().toISOString(),
     };
@@ -238,6 +306,55 @@ const groupAdd = defineCommand({
     config.groups.push(newGroup);
     saveConfig(config);
     outro(`Group "${newGroup.name}" added (ID: ${newGroup.id.slice(0, 8)})`);
+  },
+});
+
+const groupEdit = defineCommand({
+  meta: { name: 'edit', description: 'Edit an existing forwarding group' },
+  async run() {
+    const config = loadConfig();
+    if (!isConfigured(config)) {
+      log.error('Run "telegram-forwarder init" first.');
+      process.exit(1);
+    }
+    if (config.groups.length === 0) {
+      log.info('No groups configured. Run "telegram-forwarder group add" to create one.');
+      return;
+    }
+
+    intro('Edit forwarding group');
+
+    const groupId = ensure(
+      await select({
+        message: 'Which group do you want to edit?',
+        options: config.groups.map((g) => ({
+          value: g.id,
+          label: `${g.name}  (${g.contentTypes.join(', ')})`,
+        })),
+      }),
+    );
+    const target = config.groups.find((g) => g.id === groupId)!;
+
+    const channels = await fetchChannels(config);
+    if (channels.length === 0) {
+      cancel('No channels or groups found in your account.');
+      process.exit(1);
+    }
+
+    const draft = await promptGroupDetails(channels, {
+      sourcePeers: target.sourcePeers,
+      targetPeers: target.targetPeers,
+      contentTypes: target.contentTypes,
+      includeKeywords: target.includeKeywords,
+      excludeKeywords: target.excludeKeywords,
+      noAuthor: target.noAuthor,
+    });
+
+    Object.assign(target, draft, {
+      name: buildGroupName(channels, draft.sourcePeers, draft.targetPeers),
+    });
+    saveConfig(config);
+    outro(`Group "${target.name}" updated (ID: ${target.id.slice(0, 8)})`);
   },
 });
 
@@ -256,6 +373,10 @@ const groupList = defineCommand({
       console.log(`   Sources: ${styleText('cyan', g.sourcePeers.join(', '))}`);
       console.log(`   Targets: ${styleText('cyan', g.targetPeers.join(', '))}`);
       console.log(`   Types: ${g.contentTypes.join(', ')}`);
+      if (g.includeKeywords?.length)
+        console.log(`   Include keywords: ${styleText('yellow', g.includeKeywords.join(', '))}`);
+      if (g.excludeKeywords?.length)
+        console.log(`   Exclude keywords: ${styleText('yellow', g.excludeKeywords.join(', '))}`);
       console.log(`   Remove attribution: ${g.noAuthor ? 'yes' : 'no'}`);
     }
     console.log();
@@ -327,7 +448,13 @@ const groupToggle = defineCommand({
 
 const group = defineCommand({
   meta: { name: 'group', description: 'Manage forwarding groups' },
-  subCommands: { add: groupAdd, list: groupList, remove: groupRemove, toggle: groupToggle },
+  subCommands: {
+    add: groupAdd,
+    list: groupList,
+    edit: groupEdit,
+    remove: groupRemove,
+    toggle: groupToggle,
+  },
 });
 
 // ─── config ──────────────────────────────────────────────────────────────────
@@ -408,6 +535,11 @@ const start = defineCommand({
       description: 'Also append logs to ~/.telegram-forwarder/forwarder.log',
       default: false,
     },
+    'dry-run': {
+      type: 'boolean',
+      description: 'Log what would be forwarded without actually sending anything',
+      default: false,
+    },
   },
   async run({ args }) {
     setVerbosity({ verbose: args.verbose, quiet: args.quiet });
@@ -429,12 +561,13 @@ const start = defineCommand({
     logger.start('Starting Telegram Forwarder…');
     logger.info(`Active groups: ${activeGroups.map((g) => g.name).join(', ')}`);
     if (args['log-file']) logger.info(`Appending logs to ${getLogFilePath()}`);
+    if (args['dry-run']) logger.info('Dry run — matches are logged but nothing is forwarded.');
 
     const client = createClient(config);
 
     await authenticate(client);
 
-    const forwarder = new Forwarder(client, config);
+    const forwarder = new Forwarder(client, config, { dryRun: args['dry-run'] });
     await forwarder.checkPeers();
     forwarder.start();
 

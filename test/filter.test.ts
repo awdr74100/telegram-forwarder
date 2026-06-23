@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { matchesContentType, matchesPeer, toInputPeer } from '../src/filter.js';
+import { matchesContentType, matchesKeywords, matchesPeer, toInputPeer } from '../src/filter.js';
 
 const makeMsg = (mediaType?: string, flags?: { isAnimation?: boolean; isRound?: boolean }) => ({
   media: mediaType
@@ -73,6 +73,44 @@ describe('matchesContentType', () => {
   it('returns false for unsupported media types', () => {
     expect(matchesContentType(makeMsg('location'), ['photo'])).toBe(false);
     expect(matchesContentType(makeMsg('poll'), ['text'])).toBe(false);
+  });
+});
+
+describe('matchesKeywords', () => {
+  it('passes everything when both lists are empty or absent', () => {
+    expect(matchesKeywords({ text: 'anything' })).toBe(true);
+    expect(matchesKeywords({ text: 'anything' }, [], [])).toBe(true);
+    expect(matchesKeywords({}, [], [])).toBe(true);
+  });
+
+  it('keeps only messages containing an include keyword', () => {
+    expect(matchesKeywords({ text: 'breaking news today' }, ['breaking'])).toBe(true);
+    expect(matchesKeywords({ text: 'calm and quiet' }, ['breaking'])).toBe(false);
+  });
+
+  it('matches any one of several include keywords', () => {
+    expect(matchesKeywords({ text: 'market update' }, ['breaking', 'market'])).toBe(true);
+  });
+
+  it('drops messages containing an exclude keyword', () => {
+    expect(matchesKeywords({ text: 'sponsored post' }, [], ['sponsored'])).toBe(false);
+    expect(matchesKeywords({ text: 'real content' }, [], ['sponsored'])).toBe(true);
+  });
+
+  it('lets exclude win over include when both match', () => {
+    expect(matchesKeywords({ text: 'breaking ad' }, ['breaking'], ['ad'])).toBe(false);
+  });
+
+  it('is case-insensitive', () => {
+    expect(matchesKeywords({ text: 'BREAKING' }, ['breaking'])).toBe(true);
+    expect(matchesKeywords({ text: 'Sponsored' }, [], ['SPONSORED'])).toBe(false);
+  });
+
+  it('treats a media-only message (no text) as empty', () => {
+    // No text can satisfy a required include keyword…
+    expect(matchesKeywords({}, ['breaking'])).toBe(false);
+    // …but it is never caught by an exclude keyword.
+    expect(matchesKeywords({}, [], ['ad'])).toBe(true);
   });
 });
 

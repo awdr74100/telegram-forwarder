@@ -12,6 +12,8 @@ interface MediaLike {
 
 interface MessageLike {
   media?: MediaLike | null;
+  // Message text, or caption for media messages. Empty string when neither.
+  text?: string;
 }
 
 export function matchesContentType(msg: MessageLike, types: ContentType[]): boolean {
@@ -46,6 +48,25 @@ export function matchesContentType(msg: MessageLike, types: ContentType[]): bool
     default:
       return false;
   }
+}
+
+// Decide whether a message's text passes a group's keyword filters. Matching is
+// case-insensitive substring. An empty (or absent) list means "no constraint":
+// no exclude list blocks nothing, no include list lets any text through.
+// Exclude takes precedence — a message hit by both is dropped. A media-only
+// message has empty text, so it can never satisfy a non-empty include list.
+export function matchesKeywords(
+  msg: MessageLike,
+  include: string[] = [],
+  exclude: string[] = [],
+): boolean {
+  if (include.length === 0 && exclude.length === 0) return true;
+
+  const text = (msg.text ?? '').toLowerCase();
+
+  if (exclude.some((kw) => text.includes(kw.toLowerCase()))) return false;
+  if (include.length > 0) return include.some((kw) => text.includes(kw.toLowerCase()));
+  return true;
 }
 
 // mtcute reads a bare string as a username/phone; numeric (Bot-API marked) IDs
