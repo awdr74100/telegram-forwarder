@@ -22,6 +22,17 @@ const makeFakeClient = () => ({
     add: vi.fn<(handler: unknown) => void>(),
     remove: vi.fn<(handler: unknown) => void>(),
   },
+  onError: {
+    add: vi.fn<(handler: (err: Error) => void) => void>(),
+    remove: vi.fn<(handler: (err: Error) => void) => void>(),
+  },
+  resolvePeer: vi.fn<(peer: string | number) => Promise<{ _: string }>>(),
+  iterDialogs: vi.fn<() => AsyncIterable<unknown>>(),
+});
+
+// An async iterable that yields nothing — enough for warmPeerCache to drain it.
+const emptyDialogs = (): AsyncIterable<unknown> => ({
+  async *[Symbol.asyncIterator]() {},
 });
 
 // A logger stub so tests assert on log calls without touching consola. withTag()
@@ -87,6 +98,33 @@ describe('Forwarder', () => {
     expect(client.onUpdate.remove).toHaveBeenCalledTimes(1);
   });
 
+  it('registers an error handler that mutes network drops but surfaces real errors', () => {
+    const { client, log, forwarder } = makeForwarder(makeConfig([makeGroup()]));
+
+    forwarder.start();
+
+    // The handler is registered so mtcute stops printing its own "unhandled error".
+    expect(client.onError.add).toHaveBeenCalledTimes(1);
+    const onError = client.onError.add.mock.calls[0]![0];
+
+    // A dropped socket (Mac sleeping, etc.) is expected churn → debug, not error.
+    const reset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    onError(reset);
+    expect(log.error).not.toHaveBeenCalled();
+    expect(log.debug).toHaveBeenCalledWith(expect.stringContaining('mtcute will reconnect'));
+
+    // Matched by message text too, even when the code property was stripped.
+    onError(new Error('something ETIMEDOUT happened'));
+    expect(log.error).not.toHaveBeenCalled();
+
+    // Anything else is a genuine error and must be surfaced.
+    onError(new Error('AUTH_KEY_UNREGISTERED'));
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('AUTH_KEY_UNREGISTERED'));
+
+    forwarder.stop();
+    expect(client.onError.remove).toHaveBeenCalledTimes(1);
+  });
+
   it('does nothing and binds no dispatcher when every group is disabled', () => {
     const { client, log, forwarder } = makeForwarder(makeConfig([makeGroup({ enabled: false })]));
 
@@ -112,5 +150,94 @@ describe('Forwarder', () => {
 
     expect(() => forwarder.stop()).not.toThrow();
     expect(client.onUpdate.remove).not.toHaveBeenCalled();
+  });
+});
+
+describe('Forwarder.checkPeers', () => {
+  it('does not scan dialogs when every peer resolves from cache', async () => {
+    const { client, log, forwarder } = makeForwarder(
+      makeConfig([makeGroup({ sourcePeers: ['@src'], targetPeers: ['-1001'] })]),
+    );
+    client.resolvePeer.mockResolvedValue({ _: 'inputPeerChannel' });
+
+    await forwarder.checkPeers();
+
+    expect(client.iterDialogs).not.toHaveBeenCalled();
+    expect(log.warn).not.toHaveBeenCalled();
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('Resolved 2/2 peer(s)'));
+  });
+
+  it('warms the cache and recovers a peer that was missing on the first pass', async () => {
+    const { client, log, forwarder } = makeForwarder(
+      makeConfig([makeGroup({ sourcePeers: ['@src'], targetPeers: ['-1002'] })]),
+    );
+    client.iterDialogs.mockReturnValue(emptyDialogs());
+    // @src resolves throughout; -1002 fails until the dialog scan warms it.
+    client.resolvePeer.mockImplementation((peer) => {
+      if (peer === '@src') return Promise.resolve({ _: 'inputPeerChannel' });
+      return client.iterDialogs.mock.calls.length > 0
+        ? Promise.resolve({ _: 'inputPeerChannel' })
+        : Promise.reject(new Error('not in local cache'));
+    });
+
+    await forwarder.checkPeers();
+
+    expect(client.iterDialogs).toHaveBeenCalledTimes(1);
+    expect(log.warn).not.toHaveBeenCalled();
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('Resolved 2/2 peer(s)'));
+  });
+
+  it('treats a message-reference resolution as stale and refreshes it', async () => {
+    const { client, log, forwarder } = makeForwarder(
+      makeConfig([makeGroup({ sourcePeers: ['-1003'], targetPeers: ['-1003'] })]),
+    );
+    client.iterDialogs.mockReturnValue(emptyDialogs());
+    client.resolvePeer.mockImplementation(() =>
+      client.iterDialogs.mock.calls.length > 0
+        ? Promise.resolve({ _: 'inputPeerChannel' })
+        : Promise.resolve({ _: 'inputPeerChannelFromMessage' }),
+    );
+
+    await forwarder.checkPeers();
+
+    expect(client.iterDialogs).toHaveBeenCalledTimes(1);
+    expect(log.warn).not.toHaveBeenCalled();
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('Resolved 1/1 peer(s)'));
+  });
+
+  it('warns about a peer that stays unresolvable even after warming', async () => {
+    const { client, log, forwarder } = makeForwarder(
+      makeConfig([makeGroup({ sourcePeers: ['@src'], targetPeers: ['-1004'] })]),
+    );
+    client.iterDialogs.mockReturnValue(emptyDialogs());
+    client.resolvePeer.mockImplementation((peer) => {
+      if (peer === '@src') return Promise.resolve({ _: 'inputPeerChannel' });
+      return Promise.reject(new Error('not in local cache'));
+    });
+
+    await forwarder.checkPeers();
+
+    expect(client.iterDialogs).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not resolve peer "-1004"'),
+    );
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('Resolved 1/2 peer(s)'));
+  });
+
+  it('still resolves peers when the dialog scan itself fails', async () => {
+    const { client, log, forwarder } = makeForwarder(
+      makeConfig([makeGroup({ sourcePeers: ['-1005'], targetPeers: ['-1005'] })]),
+    );
+    client.iterDialogs.mockImplementation(() => {
+      throw new Error('FLOOD_WAIT');
+    });
+    client.resolvePeer.mockRejectedValue(new Error('not in local cache'));
+
+    await forwarder.checkPeers();
+
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Dialog sync failed'));
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not resolve peer "-1005"'),
+    );
   });
 });
