@@ -36,6 +36,20 @@ export class Forwarder {
     else this.log.debug(`Connection state: ${state}`);
   };
 
+  // Without an onError listener, mtcute prints every transport error as a scary
+  // "[ERR] unhandled error". Registering this both silences that and lets us
+  // route errors by severity. A dropped socket (e.g. the Mac sleeping / network
+  // going away — ECONNRESET/ETIMEDOUT/EPIPE) is expected churn: mtcute reconnects
+  // on its own, and onConnectionState already reports the offline→reconnect
+  // transition, so we log it at debug. Anything else is a real error.
+  private readonly handleClientError = (err: Error): void => {
+    if (isTransientNetworkError(err)) {
+      this.log.debug(`Network dropped (${err.message}) — mtcute will reconnect.`);
+      return;
+    }
+    this.log.error(`Client error: ${err.message}`);
+  };
+
   constructor(client: TelegramClient, config: AppConfig, opts: ForwarderOptions = {}) {
     const { logger = defaultLogger, dryRun = false } = opts;
     this.client = client;
@@ -50,6 +64,14 @@ export class Forwarder {
 
   // Pre-resolve every source/target peer before listening, so unreachable peers
   // surface as a startup warning instead of a lazy failure on the first forward.
+  //
+  // A peer stored as a numeric channel id (a private channel with no @username)
+  // can only be resolved from a cached access hash. That cache is populated by a
+  // full dialog scan — which `group add` runs, but a plain `start` does not — and
+  // a "min" cache entry is backed by a message reference that goes stale between
+  // runs. So a peer that resolved fine right after `group add` can fail to resolve
+  // the next day. When that happens we warm the cache once with a dialog scan
+  // (re-fetching fresh, non-min access hashes) and retry, mirroring `group add`.
   async checkPeers(): Promise<void> {
     const peers = new Set<string>();
     for (const group of this.groups) {
@@ -57,16 +79,64 @@ export class Forwarder {
       for (const peer of group.targetPeers) peers.add(peer);
     }
 
+    // First pass straight from cache. A peer that only resolves through a fragile
+    // message reference is treated as needing a refresh, not as already resolved.
+    const stale = new Set<string>();
+    for (const peer of peers) {
+      if ((await this.resolveState(peer)) !== 'ok') stale.add(peer);
+    }
+
+    // Only pay for a dialog scan when something actually needs it.
+    if (stale.size > 0) {
+      this.log.info(`Warming peer cache via dialog sync for ${stale.size} peer(s)…`);
+      await this.warmPeerCache();
+    }
+
     let resolved = 0;
     for (const peer of peers) {
-      try {
-        await this.client.resolvePeer(toInputPeer(peer));
-        resolved++;
-      } catch {
+      // Healthy peers from the first pass are already good; only re-check the
+      // ones we warmed. After warming, a peer still backed by a message reference
+      // is accepted (it works for now) — only a hard failure warns.
+      const state = stale.has(peer) ? await this.resolveState(peer) : 'ok';
+      if (state === 'fail') {
         this.log.warn(`Could not resolve peer "${peer}" — forwards involving it may fail.`);
+      } else {
+        resolved++;
       }
     }
     this.log.info(`Resolved ${resolved}/${peers.size} peer(s).`);
+  }
+
+  // Resolve a peer from cache and classify the result:
+  //   'ok'   — a stable input peer (real access hash, or resolved by username)
+  //   'stale'— resolved only via a message reference (inputPeer*FromMessage),
+  //            which can expire; worth refreshing with a dialog scan
+  //   'fail' — could not be resolved at all
+  private async resolveState(peer: string): Promise<'ok' | 'stale' | 'fail'> {
+    try {
+      const input = await this.client.resolvePeer(toInputPeer(peer));
+      return input._.endsWith('FromMessage') ? 'stale' : 'ok';
+    } catch {
+      return 'fail';
+    }
+  }
+
+  // Drain the full dialog list so every chat is re-fetched and re-cached with a
+  // fresh, non-min access hash. This is the only way to recover a private peer
+  // whose stored hash was lost or downgraded to a message reference — resolving
+  // by id alone cannot. `archived: 'keep'` also covers archived chats, which the
+  // default scan skips.
+  private async warmPeerCache(): Promise<void> {
+    try {
+      let count = 0;
+      // Iterating is the point: each dialog batch flows through mtcute's peer
+      // cache; we don't need the Dialog objects themselves.
+      for await (const _dialog of this.client.iterDialogs({ archived: 'keep' })) count++;
+      this.log.debug(`Dialog sync cached ${count} dialog(s).`);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.log.warn(`Dialog sync failed: ${reason} — some peers may not resolve.`);
+    }
   }
 
   start(): void {
@@ -76,6 +146,7 @@ export class Forwarder {
     }
 
     this.client.onConnectionState.add(this.handleConnectionState);
+    this.client.onError.add(this.handleClientError);
 
     const dp = Dispatcher.for(this.client);
     this.dp = dp;
@@ -139,6 +210,7 @@ export class Forwarder {
 
   stop(): void {
     this.client.onConnectionState.remove(this.handleConnectionState);
+    this.client.onError.remove(this.handleClientError);
     // Detach handlers from the client — nulling the reference alone leaves the
     // dispatcher bound and still receiving updates.
     this.dp?.unbind();
@@ -154,4 +226,25 @@ export class Forwarder {
 
 function describeChat(chat: { id: number; username?: string | null }): string {
   return chat.username ? `@${chat.username}` : String(chat.id);
+}
+
+// Socket-level errors that just mean the connection dropped and will be
+// re-established — not something the user needs to act on. Matched by both the
+// Node `code` (when present) and the message text, since mtcute may rewrap the
+// original error and lose the `code` property.
+const TRANSIENT_NETWORK_CODES = [
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EPIPE',
+  'ECONNABORTED',
+  'ENETDOWN',
+  'ENETUNREACH',
+  'ENETRESET',
+  'EHOSTUNREACH',
+];
+
+function isTransientNetworkError(err: Error): boolean {
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code && TRANSIENT_NETWORK_CODES.includes(code)) return true;
+  return TRANSIENT_NETWORK_CODES.some((c) => err.message.includes(c));
 }
