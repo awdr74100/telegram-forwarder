@@ -1,6 +1,6 @@
 {
   "name": "telegram-forwarder",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "CLI to auto-forward messages and media between Telegram channels — filter by content type, with FloodWait-safe rate limiting",
   "keywords": [
     "auto-forward",
