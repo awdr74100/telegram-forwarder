@@ -2,9 +2,16 @@ import type { Message } from '@mtcute/core';
 import { Dispatcher } from '@mtcute/dispatcher';
 import type { TelegramClient } from '@mtcute/node';
 
-import { matchesContentType, matchesKeywords, matchesPeer, toInputPeer } from './filter.js';
+import { saveConfig } from './config.js';
+import {
+  matchesContentType,
+  matchesKeywords,
+  matchesPeer,
+  replacePeer,
+  toInputPeer,
+} from './filter.js';
 import { logger as defaultLogger, type Logger } from './logger.js';
-import { type ForwardOutcome, RateLimitedQueue } from './queue.js';
+import { type ForwardOutcome, RateLimitedQueue, SkippedForward } from './queue.js';
 import type { AppConfig, ForwardGroup } from './types.js';
 
 interface ForwarderStats {
@@ -18,14 +25,24 @@ interface ForwarderOptions {
   // When true, log every match but never actually forward — for verifying
   // filters safely without sending anything or risking FloodWait.
   dryRun?: boolean;
+  // Persist config after an automatic target migration (basic group → supergroup
+  // rewrites the stored target id). Injectable so tests don't touch the real
+  // config file; defaults to saving ~/.telegram-forwarder/config.json.
+  persistConfig?: (config: AppConfig) => void;
 }
 
 export class Forwarder {
   private readonly client: TelegramClient;
+  private readonly config: AppConfig;
   private readonly groups: ForwardGroup[];
   private readonly queue: RateLimitedQueue;
   private readonly log: Logger;
   private readonly dryRun: boolean;
+  private readonly persistConfig: (config: AppConfig) => void;
+  // Targets retired this session: an invalid-peer error we could not recover via
+  // migration. Skipped silently on subsequent messages so a permanently-broken
+  // peer does not spam the log every time the source posts.
+  private readonly deadTargets = new Set<string>();
   private dp: Dispatcher | null = null;
   private readonly stats: ForwarderStats = { forwarded: 0, skipped: 0, failed: 0 };
 
@@ -51,10 +68,12 @@ export class Forwarder {
   };
 
   constructor(client: TelegramClient, config: AppConfig, opts: ForwarderOptions = {}) {
-    const { logger = defaultLogger, dryRun = false } = opts;
+    const { logger = defaultLogger, dryRun = false, persistConfig = saveConfig } = opts;
     this.client = client;
+    this.config = config;
     this.groups = config.groups.filter((g) => g.enabled);
     this.dryRun = dryRun;
+    this.persistConfig = persistConfig;
     this.log = logger.withTag('forwarder');
     this.queue = new RateLimitedQueue(config.rateLimit, {
       logger,
@@ -176,24 +195,76 @@ export class Forwarder {
 
         const msg = upd as unknown as Message;
         for (const targetPeer of group.targetPeers) {
+          // A target retired earlier this session is skipped silently.
+          if (this.deadTargets.has(targetPeer)) continue;
+
           const label = `[${group.name}] msg ${upd.id} (${mediaType}) → ${targetPeer}`;
           if (this.dryRun) {
             this.log.info(`[dry-run] would forward ${label}`);
             continue;
           }
           this.log.debug(`Enqueued ${label}`);
-          this.queue.enqueue(async () => {
-            await this.client.forwardMessages({
-              messages: [msg],
-              toChatId: toInputPeer(targetPeer),
-              noAuthor: group.noAuthor,
-            });
-          }, label);
+          this.queue.enqueue(() => this.forwardOne(msg, group, targetPeer), label);
         }
       }
     });
 
     this.log.info(`Dispatcher started. Monitoring ${this.groups.length} group(s).`);
+  }
+
+  // Forward one message to one target, transparently following a basic-group →
+  // supergroup upgrade. After a migration the old (chat-range) id is dead and
+  // Telegram answers with CHANNEL_INVALID/PEER_ID_INVALID. We then probe the
+  // target with getChat: a `migratedTo` means follow it (rewrite config + retry
+  // on the new id); a still-healthy chat means the error was not about this
+  // target (rethrow); an unreachable chat means retire it for this session.
+  // Other errors (FloodWait, deleted message, transient) are rethrown so the
+  // queue's own retry logic handles them.
+  private async forwardOne(msg: Message, group: ForwardGroup, targetPeer: string): Promise<void> {
+    try {
+      await this.forward(msg, group, targetPeer);
+    } catch (err) {
+      if (!isInvalidTargetError(err)) throw err;
+
+      const migration = await this.probeTarget(targetPeer);
+      if (migration === 'healthy') throw err;
+      if (migration === null) {
+        this.deadTargets.add(targetPeer);
+        throw new SkippedForward(
+          `Target "${targetPeer}" is unreachable and not a known migration — ` +
+            `retiring it this session. Run "group edit" to fix "${group.name}".`,
+        );
+      }
+
+      group.targetPeers = replacePeer(group.targetPeers, targetPeer, migration);
+      this.persistConfig(this.config);
+      this.log.info(
+        `Target "${targetPeer}" was upgraded to a supergroup — now forwarding ` +
+          `"${group.name}" to "${migration}" (config updated).`,
+      );
+      await this.forward(msg, group, migration);
+    }
+  }
+
+  private forward(msg: Message, group: ForwardGroup, targetPeer: string): Promise<unknown> {
+    return this.client.forwardMessages({
+      messages: [msg],
+      toChatId: toInputPeer(targetPeer),
+      noAuthor: group.noAuthor,
+    });
+  }
+
+  // Classify a target that just failed with an invalid-peer error:
+  //   string    — the new supergroup id it was migrated to (follow it)
+  //   'healthy' — the target still resolves and was not migrated (error was elsewhere)
+  //   null      — the target could not be fetched at all (retire it)
+  private async probeTarget(targetPeer: string): Promise<string | 'healthy' | null> {
+    try {
+      const chat = await this.client.getChat(toInputPeer(targetPeer));
+      return chat.migratedToId === null ? 'healthy' : String(chat.migratedToId);
+    } catch {
+      return null;
+    }
   }
 
   // Number of forwards still queued (not yet sent). Useful when reporting
@@ -247,4 +318,17 @@ function isTransientNetworkError(err: Error): boolean {
   const code = (err as NodeJS.ErrnoException).code;
   if (code && TRANSIENT_NETWORK_CODES.includes(code)) return true;
   return TRANSIENT_NETWORK_CODES.some((c) => err.message.includes(c));
+}
+
+// Telegram errors meaning "the destination peer reference is no longer valid".
+// For a forward target this is the signature of a basic group upgraded to a
+// supergroup (its id changed) — or a chat we can no longer reach. Matched on
+// both the RpcError `errorMessage` and a plain message string.
+const INVALID_TARGET_ERRORS = ['CHANNEL_INVALID', 'PEER_ID_INVALID', 'CHAT_ID_INVALID'];
+
+export function isInvalidTargetError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg =
+    ('errorMessage' in err ? (err as { errorMessage?: string }).errorMessage : null) ?? err.message;
+  return INVALID_TARGET_ERRORS.some((code) => msg.includes(code));
 }

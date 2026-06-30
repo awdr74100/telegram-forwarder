@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { matchesContentType, matchesKeywords, matchesPeer, toInputPeer } from '../src/filter.js';
+import {
+  matchesContentType,
+  matchesKeywords,
+  matchesPeer,
+  replacePeer,
+  toInputPeer,
+} from '../src/filter.js';
 
 const makeMsg = (mediaType?: string, flags?: { isAnimation?: boolean; isRound?: boolean }) => ({
   media: mediaType
@@ -156,5 +162,26 @@ describe('toInputPeer', () => {
 
   it('converts a positive numeric ID to a number', () => {
     expect(toInputPeer('12345')).toBe(12345);
+  });
+});
+
+describe('replacePeer', () => {
+  it('swaps the matching id and leaves the others untouched', () => {
+    expect(replacePeer(['-4187363166', '@other'], '-4187363166', '-1004187363166')).toEqual([
+      '-1004187363166',
+      '@other',
+    ]);
+  });
+
+  it('is a no-op when the id to replace is absent', () => {
+    expect(replacePeer(['@a', '@b'], '-1', '-2')).toEqual(['@a', '@b']);
+  });
+
+  it('drops the duplicate when the new id is already in the list', () => {
+    expect(replacePeer(['-100', '@x'], '@x', '-100')).toEqual(['-100']);
+  });
+
+  it('returns an empty list unchanged', () => {
+    expect(replacePeer([], '-1', '-2')).toEqual([]);
   });
 });
