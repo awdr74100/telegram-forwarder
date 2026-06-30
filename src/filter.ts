@@ -78,6 +78,19 @@ export function toInputPeer(peer: string): string | number {
   return Number.isNaN(id) ? peer : id;
 }
 
+// Swap one stored peer identifier for another across a peer list, preserving
+// order and dropping duplicates. Used when a basic group is upgraded to a
+// supergroup: its id changes (e.g. -4187363166 → -1004187363166) and the group
+// config must follow without introducing a duplicate target.
+export function replacePeer(peers: string[], from: string, to: string): string[] {
+  const out: string[] = [];
+  for (const peer of peers) {
+    const next = peer === from ? to : peer;
+    if (!out.includes(next)) out.push(next);
+  }
+  return out;
+}
+
 export function matchesPeer(
   chat: { id: number | string; username?: string | null },
   peer: string,

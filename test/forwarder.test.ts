@@ -1,7 +1,7 @@
 import type { TelegramClient } from '@mtcute/node';
 import { describe, expect, it, vi } from 'vitest';
 
-import { Forwarder } from '../src/forwarder.js';
+import { Forwarder, isInvalidTargetError } from '../src/forwarder.js';
 import type { Logger } from '../src/logger.js';
 import type { AppConfig, ForwardGroup } from '../src/types.js';
 
@@ -150,6 +150,30 @@ describe('Forwarder', () => {
 
     expect(() => forwarder.stop()).not.toThrow();
     expect(client.onUpdate.remove).not.toHaveBeenCalled();
+  });
+});
+
+describe('isInvalidTargetError', () => {
+  it('matches invalid-peer RpcErrors by errorMessage', () => {
+    const rpc = Object.assign(new Error('Telegram API error 400'), {
+      errorMessage: 'CHANNEL_INVALID',
+    });
+    expect(isInvalidTargetError(rpc)).toBe(true);
+  });
+
+  it('matches the same codes in a plain message string', () => {
+    expect(isInvalidTargetError(new Error('Telegram API error 400: PEER_ID_INVALID'))).toBe(true);
+    expect(isInvalidTargetError(new Error('CHAT_ID_INVALID'))).toBe(true);
+  });
+
+  it('does not swallow FloodWait or deleted-message errors', () => {
+    expect(isInvalidTargetError(new Error('FLOOD_WAIT_60'))).toBe(false);
+    expect(isInvalidTargetError(new Error('MESSAGE_ID_INVALID'))).toBe(false);
+  });
+
+  it('ignores non-Error values', () => {
+    expect(isInvalidTargetError('CHANNEL_INVALID')).toBe(false);
+    expect(isInvalidTargetError(null)).toBe(false);
   });
 });
 

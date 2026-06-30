@@ -5,6 +5,12 @@ type Task = () => Promise<void>;
 
 export type ForwardOutcome = 'sent' | 'skipped' | 'failed';
 
+// Thrown by a task to tell the queue the forward was deliberately skipped rather
+// than failed: the queue records it as 'skipped' and surfaces the message as a
+// warning, not an error. Used when a target is retired mid-session (e.g. an
+// unreachable peer that is not a recoverable migration).
+export class SkippedForward extends Error {}
+
 interface QueueDeps {
   logger?: Logger;
   // Called once per task with its terminal outcome so callers can keep stats.
@@ -57,6 +63,12 @@ export class RateLimitedQueue {
       this.log.success(label);
       this.onOutcome?.('sent', label);
     } catch (err: unknown) {
+      if (err instanceof SkippedForward) {
+        this.log.warn(err.message);
+        this.onOutcome?.('skipped', label);
+        return;
+      }
+
       if (isDeletedMessage(err)) {
         this.log.warn(`Message was deleted before forwarding — skipping (${label})`);
         this.onOutcome?.('skipped', label);
