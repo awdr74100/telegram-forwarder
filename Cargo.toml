@@ -45,7 +45,7 @@ grammers-session = { version = "0.10", default-features = false, features = ["se
 grammers-tl-types = "0.10"
 
 # Async runtime.
-tokio = { version = "1", features = [
+tokio = { version = "1.53.1", features = [
   "rt-multi-thread",
   "macros",
   "signal",
@@ -56,33 +56,33 @@ tokio = { version = "1", features = [
 ] }
 
 # CLI surface.
-clap = { version = "4", features = ["derive", "env", "wrap_help"] }
-clap_complete = "4"
-inquire = "0.9"
+clap = { version = "4.6.6", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.6.9"
+inquire = "0.9.4"
 
 # Diagnostics.
-color-eyre = "0.6"
-thiserror = "2"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+color-eyre = "0.6.5"
+thiserror = "2.0.20"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tracing-log = "0.2"
 
 # Configuration and state.
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 toml = "1.1.4"
-humantime-serde = "1"
+humantime-serde = "1.1.1"
 directories = "6"
-fs-err = "3"
+fs-err = "3.3.1"
 
 # Runtime plumbing.
-dashmap = "6"
-chrono = "0.4"
-rand = "0.9"
-unicode-width = "0.2"
+dashmap = "6.2.1"
+chrono = "0.4.45"
+rand = "0.10.2"
+unicode-width = "0.2.2"
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.27.0"
 
 [lints.rust]
 unsafe_code = "forbid"
