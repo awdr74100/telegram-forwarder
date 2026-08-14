@@ -78,7 +78,7 @@ fs-err = "3"
 # Runtime plumbing.
 dashmap = "6"
 chrono = "0.4"
-rand = "0.9"
+rand = "0.10"
 unicode-width = "0.2"
 
 [dev-dependencies]
