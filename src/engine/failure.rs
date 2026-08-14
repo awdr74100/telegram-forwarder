@@ -202,7 +202,7 @@ pub fn classify(error: &InvocationError) -> Disposition {
 /// Jitter matters when several targets fail together: without it they would all
 /// wake at the same instant and hammer the API in lockstep.
 pub fn backoff_delay(attempt: u32) -> Duration {
-    use rand::Rng as _;
+    use rand::RngExt as _;
 
     const BASE_MS: u64 = 400;
     const CEILING_MS: u64 = 30_000;
