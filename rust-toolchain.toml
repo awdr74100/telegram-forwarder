@@ -2,6 +2,6 @@
 # `rustup` reads this file automatically, so `cargo build` in a fresh clone
 # installs and uses the right toolchain without any manual step.
 [toolchain]
-channel = "1.97.1"
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]
 profile = "minimal"
