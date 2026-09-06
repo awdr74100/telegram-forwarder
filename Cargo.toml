@@ -8,7 +8,7 @@ edition = "2024"
 # `helix` resolves it the same way; `uv` and `ruff` keep a gap, but they publish
 # libraries to crates.io where the number is load-bearing, and this ships as a
 # prebuilt binary where it is not.
-rust-version = "1.97.1"
+rust-version = "1.98.1"
 description = "Many-to-many Telegram forwarder: route any number of chats into any number of others, each with its own filter and delivery mode"
 authors = ["Roya <a78945612385238@gmail.com>"]
 license = "MIT"
