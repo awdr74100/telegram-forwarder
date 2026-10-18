@@ -41,7 +41,7 @@ path = "src/main.rs"
 # single JSON file instead (see `src/session`). The `serde` feature is what makes that
 # possible, since it derives Serialize/Deserialize on the session's own types.
 grammers-client = "0.10"
-grammers-session = { version = "0.10", default-features = false, features = ["serde"] }
+grammers-session = { version = "0.11", default-features = false, features = ["serde"] }
 grammers-tl-types = "0.10"
 
 # Async runtime.
