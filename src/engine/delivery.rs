@@ -20,9 +20,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::Result;
-use grammers_client::media::{Attribute, InputMedia, Uploaded};
+use grammers_client::media::{InputMedia, Media, Uploaded};
 use grammers_client::message::InputMessage;
-use grammers_client::{Client, InvocationError};
+use grammers_client::{Client, InvocationError, tl};
 use grammers_session::types::PeerRef;
 use tokio::sync::Mutex;
 
@@ -585,7 +585,7 @@ impl Dispatcher {
                         InputMedia::new()
                             .caption(snap.text.clone())
                             .fmt_entities(snap.entities.clone())
-                            .copy_media(snap.media.as_ref()?),
+                            .media(copied_media(snap.media.as_ref()?)?),
                     )
                 })
                 .collect();
@@ -612,8 +612,8 @@ impl Dispatcher {
             .text(snap.text.clone())
             .fmt_entities(snap.entities.clone());
 
-        if let Some(media) = &snap.media {
-            input = input.copy_media(media);
+        if let Some(media) = snap.media.as_ref().and_then(copied_media) {
+            input = input.media(media);
         }
 
         let sent = self.client.send_message(target_ref, input).await?;
@@ -655,28 +655,10 @@ impl Dispatcher {
             return Ok(Sent::all(vec![sent.id()]));
         };
 
-        let mut input = InputMessage::new()
+        let input = InputMessage::new()
             .text(snap.text.clone())
-            .fmt_entities(snap.entities.clone());
-
-        // The MIME type has to be set before the media, and the file name after
-        // it; otherwise both are ignored and the upload arrives as an unnamed
-        // `application/octet-stream` blob.
-        if let Some(mime) = &snap.mime_type {
-            input = input.mime_type(mime);
-        }
-
-        // Photos must be sent as photos to stay viewable inline; everything else
-        // travels as a document.
-        input = if snap.kind == MediaKind::Photo {
-            input.photo(uploaded)
-        } else {
-            input.document(uploaded)
-        };
-
-        if let Some(name) = &snap.file_name {
-            input = input.attribute(Attribute::FileName(name.clone()));
-        }
+            .fmt_entities(snap.entities.clone())
+            .media(rehosted_media(snap, uploaded));
 
         let sent = self
             .client
@@ -736,27 +718,107 @@ impl Dispatcher {
     }
 }
 
-/// One re-uploaded album member, with its original name and type restored.
+/// One re-uploaded album member, dressed as what it was.
 fn build_album_item(snap: &Snapshot, uploaded: Uploaded) -> InputMedia {
-    let mut item = InputMedia::new()
+    InputMedia::new()
         .caption(snap.text.clone())
-        .fmt_entities(snap.entities.clone());
+        .fmt_entities(snap.entities.clone())
+        .media(rehosted_media(snap, uploaded))
+}
 
-    if let Some(mime) = &snap.mime_type {
-        item = item.mime_type(mime);
+/// The original media, to be re-sent by reference.
+///
+/// `grammers` converts a photo or document with `spoiler` hard-wired to
+/// `false`, so a copy would show uncovered whatever the publisher had hidden.
+fn copied_media(media: &Media) -> Option<tl::enums::InputMedia> {
+    let mut input = media.to_raw_input_media()?;
+    match &mut input {
+        tl::enums::InputMedia::Photo(photo) => photo.spoiler = has_spoiler(media),
+        tl::enums::InputMedia::Document(document) => document.spoiler = has_spoiler(media),
+        _ => {}
+    }
+    Some(input)
+}
+
+/// Re-uploaded bytes, presented the way the original was.
+///
+/// An upload on its own is an anonymous file. Telegram learns that it is a
+/// video, a voice note, a round video or a GIF only from the document's
+/// attributes, so without them every one of those arrives as a download.
+/// Photos must be sent as photos to stay viewable inline.
+fn rehosted_media(snap: &Snapshot, uploaded: Uploaded) -> tl::enums::InputMedia {
+    let spoiler = snap.media.as_ref().is_some_and(has_spoiler);
+
+    if snap.kind == MediaKind::Photo {
+        return tl::types::InputMediaUploadedPhoto {
+            spoiler,
+            live_photo: false,
+            file: uploaded.raw,
+            stickers: None,
+            ttl_seconds: None,
+            video: None,
+        }
+        .into();
     }
 
-    item = if snap.kind == MediaKind::Photo {
-        item.photo(uploaded)
-    } else {
-        item.document(uploaded)
+    tl::types::InputMediaUploadedDocument {
+        nosound_video: false,
+        force_file: false,
+        spoiler,
+        file: uploaded.raw,
+        thumb: None,
+        // Guessing from the cache file's `.bin` extension would turn a video
+        // into an unplayable `application/octet-stream` blob.
+        mime_type: snap
+            .mime_type
+            .clone()
+            .unwrap_or_else(|| "application/octet-stream".to_owned()),
+        attributes: file_attributes(snap.media.as_ref()),
+        stickers: None,
+        video_cover: None,
+        video_timestamp: None,
+        ttl_seconds: None,
+    }
+    .into()
+}
+
+/// The source document's attributes that describe the file itself.
+///
+/// These hold for the same bytes wherever they are uploaded. The rest refer to
+/// other objects on Telegram — a sticker set, attached stickers — which a fresh
+/// upload is not linked to and could only be refused over.
+fn file_attributes(media: Option<&Media>) -> Vec<tl::enums::DocumentAttribute> {
+    let document = match media {
+        Some(Media::Document(document)) => document,
+        Some(Media::Sticker(sticker)) => &sticker.document,
+        _ => return Vec::new(),
+    };
+    let Some(tl::enums::Document::Document(raw)) = &document.raw.document else {
+        return Vec::new();
     };
 
-    if let Some(name) = &snap.file_name {
-        item = item.attribute(Attribute::FileName(name.clone()));
-    }
+    raw.attributes
+        .iter()
+        .filter(|attribute| {
+            matches!(
+                attribute,
+                tl::enums::DocumentAttribute::Filename(_)
+                    | tl::enums::DocumentAttribute::Video(_)
+                    | tl::enums::DocumentAttribute::Audio(_)
+                    | tl::enums::DocumentAttribute::Animated
+                    | tl::enums::DocumentAttribute::ImageSize(_)
+            )
+        })
+        .cloned()
+        .collect()
+}
 
-    item
+fn has_spoiler(media: &Media) -> bool {
+    match media {
+        Media::Photo(photo) => photo.raw.spoiler,
+        Media::Document(document) => document.raw.spoiler,
+        _ => false,
+    }
 }
 
 /// How far a walk down the ladder got.
@@ -991,5 +1053,190 @@ mod tests {
             pacer.acquire(-1001).await;
         }
         assert!(start.elapsed() < Duration::from_millis(50));
+    }
+
+    fn photo(spoiler: bool) -> Media {
+        Media::from_raw(
+            tl::types::MessageMediaPhoto {
+                spoiler,
+                live_photo: false,
+                photo: Some(
+                    tl::types::Photo {
+                        has_stickers: false,
+                        id: 1,
+                        access_hash: 2,
+                        file_reference: vec![3],
+                        date: 0,
+                        sizes: Vec::new(),
+                        video_sizes: None,
+                        dc_id: 2,
+                    }
+                    .into(),
+                ),
+                ttl_seconds: None,
+                video: None,
+            }
+            .into(),
+        )
+        .unwrap()
+    }
+
+    fn document(spoiler: bool, attributes: Vec<tl::enums::DocumentAttribute>) -> Media {
+        Media::from_raw(
+            tl::types::MessageMediaDocument {
+                nopremium: false,
+                spoiler,
+                video: false,
+                round: false,
+                voice: false,
+                document: Some(
+                    tl::types::Document {
+                        id: 1,
+                        access_hash: 2,
+                        file_reference: vec![3],
+                        date: 0,
+                        mime_type: "audio/ogg".to_owned(),
+                        size: 10,
+                        thumbs: None,
+                        video_thumbs: None,
+                        dc_id: 2,
+                        attributes,
+                    }
+                    .into(),
+                ),
+                alt_documents: None,
+                video_cover: None,
+                video_timestamp: None,
+                ttl_seconds: None,
+            }
+            .into(),
+        )
+        .unwrap()
+    }
+
+    fn uploaded() -> Uploaded {
+        Uploaded::from_raw(
+            tl::types::InputFile {
+                id: 9,
+                parts: 1,
+                name: "-1001_7.bin".to_owned(),
+                md5_checksum: String::new(),
+            }
+            .into(),
+        )
+    }
+
+    fn snapshot_of(media: Media, kind: MediaKind) -> Snapshot {
+        let mut snap = Snapshot::for_test(7, "");
+        snap.mime_type = match &media {
+            Media::Document(document) => document.mime_type().map(str::to_owned),
+            _ => None,
+        };
+        snap.media = Some(media);
+        snap.kind = kind;
+        snap
+    }
+
+    fn voice_note_attributes() -> Vec<tl::enums::DocumentAttribute> {
+        vec![
+            tl::types::DocumentAttributeAudio {
+                voice: true,
+                duration: 4,
+                title: None,
+                performer: None,
+                waveform: Some(vec![1, 2, 3]),
+            }
+            .into(),
+            tl::types::DocumentAttributeFilename {
+                file_name: "note.ogg".to_owned(),
+            }
+            .into(),
+            tl::enums::DocumentAttribute::HasStickers,
+        ]
+    }
+
+    #[test]
+    fn a_copied_photo_stays_behind_its_spoiler() {
+        let Some(tl::enums::InputMedia::Photo(copied)) = copied_media(&photo(true)) else {
+            panic!("a photo must copy as a photo");
+        };
+        assert!(copied.spoiler);
+
+        let Some(tl::enums::InputMedia::Photo(copied)) = copied_media(&photo(false)) else {
+            panic!("a photo must copy as a photo");
+        };
+        assert!(!copied.spoiler);
+    }
+
+    #[test]
+    fn a_copied_document_stays_behind_its_spoiler() {
+        let Some(tl::enums::InputMedia::Document(copied)) =
+            copied_media(&document(true, Vec::new()))
+        else {
+            panic!("a document must copy as a document");
+        };
+        assert!(copied.spoiler);
+    }
+
+    #[test]
+    fn a_rehosted_voice_note_is_still_a_voice_note() {
+        let snap = snapshot_of(document(false, voice_note_attributes()), MediaKind::Voice);
+
+        let tl::enums::InputMedia::UploadedDocument(rehosted) = rehosted_media(&snap, uploaded())
+        else {
+            panic!("a voice note must be uploaded as a document");
+        };
+
+        assert_eq!(rehosted.mime_type, "audio/ogg");
+        assert!(rehosted.attributes.iter().any(|attribute| matches!(
+            attribute,
+            tl::enums::DocumentAttribute::Audio(audio) if audio.voice && audio.waveform.is_some()
+        )));
+        assert!(rehosted.attributes.iter().any(|attribute| matches!(
+            attribute,
+            tl::enums::DocumentAttribute::Filename(name) if name.file_name == "note.ogg"
+        )));
+    }
+
+    #[test]
+    fn a_rehost_drops_attributes_that_point_at_other_objects() {
+        let snap = snapshot_of(document(false, voice_note_attributes()), MediaKind::Voice);
+
+        let tl::enums::InputMedia::UploadedDocument(rehosted) = rehosted_media(&snap, uploaded())
+        else {
+            panic!("a voice note must be uploaded as a document");
+        };
+
+        assert_eq!(rehosted.attributes.len(), 2);
+        assert!(
+            !rehosted
+                .attributes
+                .iter()
+                .any(|attribute| matches!(attribute, tl::enums::DocumentAttribute::HasStickers))
+        );
+    }
+
+    #[test]
+    fn a_rehosted_photo_is_a_photo_and_keeps_its_spoiler() {
+        let snap = snapshot_of(photo(true), MediaKind::Photo);
+
+        let tl::enums::InputMedia::UploadedPhoto(rehosted) = rehosted_media(&snap, uploaded())
+        else {
+            panic!("a photo must be uploaded as a photo");
+        };
+        assert!(rehosted.spoiler);
+    }
+
+    #[test]
+    fn a_rehost_without_a_known_type_is_a_plain_binary() {
+        let mut snap = snapshot_of(document(false, Vec::new()), MediaKind::Document);
+        snap.mime_type = None;
+
+        let tl::enums::InputMedia::UploadedDocument(rehosted) = rehosted_media(&snap, uploaded())
+        else {
+            panic!("a document must be uploaded as a document");
+        };
+        assert_eq!(rehosted.mime_type, "application/octet-stream");
+        assert_eq!(rehosted.attributes, Vec::new());
     }
 }

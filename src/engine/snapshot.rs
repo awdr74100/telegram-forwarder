@@ -64,8 +64,6 @@ pub struct Snapshot {
     pub entities: Vec<tl::enums::MessageEntity>,
     /// Media descriptor, usable to re-send without re-uploading.
     pub media: Option<Media>,
-    /// Original file name, so a re-upload does not arrive as `<chat>_<id>.bin`.
-    pub file_name: Option<String>,
     /// Original MIME type. Without it a re-uploaded video is guessed from the
     /// cache file's extension and arrives as an unplayable binary blob.
     pub mime_type: Option<String>,
@@ -121,7 +119,6 @@ impl Snapshot {
             text: text.to_owned(),
             entities: Vec::new(),
             media: None,
-            file_name: None,
             mime_type: None,
             grouped_id: None,
             kind: MediaKind::Text,
@@ -166,7 +163,7 @@ impl Snapshotter {
     pub fn capture(&self, source_chat: i64, message: &Message) -> Arc<Snapshot> {
         let media = message.media();
         let kind = filter::classify(media.as_ref());
-        let (file_name, mime_type) = describe_file(media.as_ref());
+        let mime_type = mime_type_of(media.as_ref());
 
         // Only media with somewhere to download *from* is worth queueing. A poll
         // or a link preview reports `Some(media)` but has no file location, and
@@ -189,7 +186,6 @@ impl Snapshotter {
             text: message.text().to_owned(),
             entities: message.fmt_entities().cloned().unwrap_or_default(),
             media: media.clone(),
-            file_name,
             mime_type,
             grouped_id: message.grouped_id(),
             kind,
@@ -268,21 +264,18 @@ impl Snapshotter {
     }
 }
 
-/// The original file name and MIME type, when the media has a file behind it.
+/// The original MIME type, when the media has a file behind it.
 ///
-/// A re-upload otherwise inherits the cache file's name and has its type guessed
-/// from the `.bin` extension, which turns a video into an unplayable download.
-fn describe_file(media: Option<&Media>) -> (Option<String>, Option<String>) {
+/// A re-upload otherwise has its type guessed from the cache file's `.bin`
+/// extension, which turns a video into an unplayable download.
+fn mime_type_of(media: Option<&Media>) -> Option<String> {
     let document = match media {
         Some(Media::Document(document)) => document,
         Some(Media::Sticker(sticker)) => &sticker.document,
-        _ => return (None, None),
+        _ => return None,
     };
 
-    (
-        document.name().map(str::to_owned),
-        document.mime_type().map(str::to_owned),
-    )
+    document.mime_type().map(str::to_owned)
 }
 
 /// Remove cache entries older than `ttl`.
@@ -323,7 +316,6 @@ mod tests {
             text: text.to_owned(),
             entities: Vec::new(),
             media: None,
-            file_name: None,
             mime_type: None,
             grouped_id: None,
             kind,

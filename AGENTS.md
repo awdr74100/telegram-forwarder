@@ -118,6 +118,11 @@ recover.
   `Media::to_raw_input_media`, which is `None` for a link preview — so filtering
   album members on "has media" rather than "converts to an input media" hands
   `grammers` a `None` to unwrap and takes the process down.
+- **`copy_media` uncovers spoilers, and an upload is an anonymous file.**
+  `to_raw_input_media` hard-wires `spoiler` to `false`, and a bare upload carries
+  none of the document attributes that make it a video, a voice note, a round
+  video or a GIF. Both lower rungs therefore build the raw `InputMedia`
+  themselves, from the snapshotted `Media`.
 - **`Media` being `Some` does not mean there are bytes.** Polls, locations,
   contacts, dice and link previews are all modelled as media with no file
   location behind them. Asking to download one creates an empty file before the
