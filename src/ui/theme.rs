@@ -136,7 +136,7 @@ mod tests {
             Level::Error,
             Level::Debug,
         ] {
-            assert!(!level.glyph().is_empty());
+            assert_ne!(level.glyph(), "");
         }
     }
 
