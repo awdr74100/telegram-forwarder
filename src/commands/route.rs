@@ -1061,6 +1061,6 @@ mod tests {
             split_keywords(" urgent , breaking ,, "),
             vec!["urgent".to_owned(), "breaking".to_owned()]
         );
-        assert!(split_keywords("   ").is_empty());
+        assert_eq!(split_keywords("   "), Vec::<String>::new());
     }
 }

@@ -837,7 +837,7 @@ mod tests {
             .collect();
         let sent = Sent::split(&[], &snapshots);
 
-        assert!(sent.delivered.is_empty());
+        assert_eq!(sent.delivered, Vec::<i32>::new());
         assert_eq!(sent.refused.len(), 3);
     }
 

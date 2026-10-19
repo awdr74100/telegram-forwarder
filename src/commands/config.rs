@@ -140,6 +140,6 @@ mod tests {
     fn an_unset_editor_falls_through_to_the_default() {
         assert_eq!(parse_editor(""), None);
         assert_eq!(parse_editor("   "), None);
-        assert!(!default_editor().is_empty());
+        assert_ne!(default_editor(), "");
     }
 }

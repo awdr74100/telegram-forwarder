@@ -138,7 +138,7 @@ mod tests {
 
         let mode = fs_err::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "{mode:o} exposes snapshotted media");
-        assert!(fs_err::read(&path).unwrap().is_empty());
+        assert_eq!(fs_err::read(&path).unwrap(), b"");
     }
 
     #[test]
