@@ -108,6 +108,10 @@ fn entry_from_peer(peer: &Peer) -> Option<DialogEntry> {
             };
             (kind, title, true)
         }
+
+        // A community only links other chats together; nothing is posted to
+        // it, so it can be neither a source nor a target.
+        Peer::Community(_) => return None,
     };
 
     Some(DialogEntry {

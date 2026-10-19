@@ -33,8 +33,8 @@ const DEFAULT_FILTER: &str = "tgfwd=info,warn";
 /// output, 2 or more turns on the underlying Telegram library as well.
 /// An explicit `RUST_LOG` always wins.
 pub fn init(verbosity: u8) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // `grammers` logs through the `log` crate, so bridge it into `tracing`,
-    // otherwise its warnings would be invisible.
+    // Some dependencies still log through the `log` crate, so bridge it into
+    // `tracing`, otherwise their warnings would be invisible.
     tracing_log::LogTracer::init()?;
 
     let filter = match std::env::var("RUST_LOG") {

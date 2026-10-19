@@ -94,10 +94,13 @@ behind a dirty flag and flushed by the engine's housekeeping tick.
 **`cache_peer` must not block or await anything real.** `Engine::run` polls
 `UpdateStream::next` inside a `tokio::select!`, so that future is dropped
 whenever the housekeeping tick wins the race. It survives that today only
-because the one await inside `process_socket_updates` — `build_peer_map`, which
-calls `cache_peer` — completes without ever yielding. Give `cache_peer` a real
-suspension point and updates that have already advanced the `pts` will start
-disappearing at cancellation, with no gap left for `getDifference` to recover.
+because of the one await in `UpdateStream::next_raw` that sits between taking a
+batch off the message box and buffering it — `build_peer_map`, which reaches
+`cache_peer` through the trait's default `cache_peers` — and that await completes
+without ever yielding. Give `cache_peer` a real suspension point, or override
+`cache_peers` with one, and updates that have already advanced the `pts` will
+start disappearing at cancellation, with no gap left for `getDifference` to
+recover.
 
 ## Traps discovered the hard way
 
@@ -131,6 +134,11 @@ disappearing at cancellation, with no gap left for `getDifference` to recover.
   are rejected by `Config::validate`, not handled at runtime: `max_in_flight = 0`
   gives the semaphore no permits and hangs every delivery *and* the shutdown that
   waits for them, and `max_attempts = 0` skips the retry loop body entirely.
+- **The raw update channel is bounded and drops on overflow.** Since `grammers`
+  0.11 the sender pool hands updates over through a channel of
+  `updates_channel_capacity` and discards what does not fit, logging only a
+  warning. The gap is recovered by `getDifference`, but anything deleted before
+  that is lost, so `telegram/mod.rs` raises the library default of 100.
 
 ### Where files live
 
