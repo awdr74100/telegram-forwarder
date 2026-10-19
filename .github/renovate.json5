@@ -87,6 +87,16 @@
       "enabled": false
     },
     {
+      // `grammers-client` takes and returns `grammers-session` and
+      // `grammers-tl-types` types in its public API, so the three only compile
+      // at the same version. Filed separately, the 0.11 bump arrived as three
+      // pull requests that each failed on its own and could only land together.
+      "description": "The grammers crates share types and move together",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["/^grammers-/"],
+      "groupName": "grammers"
+    },
+    {
       // `rust-toolchain.toml` and `rust-version` are deliberately equal — see
       // the comment above `rust-version` in `Cargo.toml`. Moving one without
       // the other would make the MSRV a claim nothing compiles against.
