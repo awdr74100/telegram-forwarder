@@ -103,8 +103,9 @@ pub fn classify(error: &InvocationError) -> Disposition {
     let InvocationError::Rpc(rpc) = error else {
         return match error {
             // The connection was torn down, usually because we are shutting
-            // down. There is nothing left to retry against, in any size.
-            InvocationError::Dropped => Disposition::Fatal(Fatal::destination("connection closed")),
+            // down, or the peer is missing from the session cache. Neither has
+            // anything left to retry against, in any size.
+            InvocationError::Dropped(reason) => Disposition::Fatal(Fatal::destination(reason)),
             // Transport and IO faults are exactly what backoff is for.
             _ => Disposition::Backoff,
         };
@@ -338,7 +339,7 @@ mod tests {
     #[test]
     fn a_dropped_connection_is_not_retried() {
         assert!(matches!(
-            classify(&InvocationError::Dropped),
+            classify(&InvocationError::Dropped("connection closed")),
             Disposition::Fatal(_)
         ));
     }

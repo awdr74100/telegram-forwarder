@@ -272,8 +272,7 @@ impl Session for FileSession {
         })
     }
 
-    fn cache_peer(&self, peer: &PeerInfo) -> BoxFuture<'_, Result<(), Self::Error>> {
-        let peer = peer.clone();
+    fn cache_peer(&self, peer: PeerInfo) -> BoxFuture<'_, Result<(), Self::Error>> {
         Box::pin(async move {
             self.mutate(|data| {
                 data.peer_infos
@@ -392,7 +391,7 @@ mod tests {
             auth: None,
             kind: None,
         };
-        session.cache_peer(&peer).await.unwrap();
+        session.cache_peer(peer.clone()).await.unwrap();
 
         assert_eq!(session.cached_peer_count().unwrap(), 1);
         assert!(session.peer(peer.id()).await.unwrap().is_some());
