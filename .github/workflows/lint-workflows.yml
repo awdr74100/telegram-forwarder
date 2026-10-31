@@ -48,7 +48,7 @@ jobs:
       # Findings fail the run directly rather than being uploaded to code
       # scanning, which is why no extra permission is needed.
       - name: Security
-        uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
         with:
           advanced-security: false
 
@@ -65,7 +65,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
         with:
           tool: just,cargo-binstall
 
